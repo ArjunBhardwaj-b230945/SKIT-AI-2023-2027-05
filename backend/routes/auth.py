@@ -1,4 +1,9 @@
-from fastapi import APIRouter, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
 from pydantic import BaseModel, EmailStr
 
 from controllers.auth import (
@@ -7,7 +12,14 @@ from controllers.auth import (
     get_user_profile,
     get_all_users,
     update_user,
-    delete_user
+    delete_user,
+    serialize_user,
+)
+
+from middleware.auth import (
+    get_current_user,
+    get_current_admin,
+    require_self_or_admin,
 )
 
 
@@ -27,17 +39,16 @@ router = APIRouter(
 
 class SignupRequest(BaseModel):
     """
-    Request body used while registering a new user.
+    Data required for public user registration.
     """
 
     email: EmailStr
     password: str
-    role: str = "user"
 
 
 class LoginRequest(BaseModel):
     """
-    Request body used for user authentication.
+    Data required for user login.
     """
 
     email: EmailStr
@@ -46,18 +57,16 @@ class LoginRequest(BaseModel):
 
 class UpdateUserRequest(BaseModel):
     """
-    Request body used to update basic user information.
+    Fields that a user can update through the public API.
 
-    Both fields are optional because the client may update
-    either the email, the role, or both.
+    Role changes are intentionally excluded from this model.
     """
 
     email: EmailStr | None = None
-    role: str | None = None
 
 
 # ============================================================
-# Registration API
+# Registration
 # ============================================================
 
 @router.post(
@@ -66,21 +75,20 @@ class UpdateUserRequest(BaseModel):
 )
 def signup(data: SignupRequest):
     """
-    Register a new user.
+    Register a standard user.
 
-    The controller performs validation, duplicate checking,
-    password hashing and user creation.
+    Public requests cannot choose their own role.
     """
 
     return signup_user(
         email=data.email,
         password=data.password,
-        role=data.role
+        role="user"
     )
 
 
 # ============================================================
-# Login API
+# Login
 # ============================================================
 
 @router.post(
@@ -89,7 +97,7 @@ def signup(data: SignupRequest):
 )
 def login(data: LoginRequest):
     """
-    Authenticate an existing user and return a JWT token.
+    Authenticate a user and issue an access token.
     """
 
     return login_user(
@@ -99,36 +107,78 @@ def login(data: LoginRequest):
 
 
 # ============================================================
-# Get All Users
+# Current User Profile
+# ============================================================
+
+@router.get(
+    "/me",
+    status_code=status.HTTP_200_OK
+)
+def get_my_profile(
+    current_user: dict = Depends(
+        get_current_user
+    )
+):
+    """
+    Return the profile of the authenticated user.
+
+    The client does not supply a user ID, so it cannot
+    request another user's profile through this endpoint.
+    """
+
+    return {
+        "success": True,
+        "user": serialize_user(
+            current_user
+        )
+    }
+
+
+# ============================================================
+# List Users - Administrator Only
 # ============================================================
 
 @router.get(
     "/users",
     status_code=status.HTTP_200_OK
 )
-def get_users():
+def get_users(
+    current_admin: dict = Depends(
+        get_current_admin
+    )
+):
     """
-    Return all registered users.
+    List registered users.
 
-    Sensitive password information is removed before the
-    response is returned.
+    Access is restricted to administrators.
     """
 
     return get_all_users()
 
 
 # ============================================================
-# Get User By ID
+# Retrieve User By ID
 # ============================================================
 
 @router.get(
     "/users/{user_id}",
     status_code=status.HTTP_200_OK
 )
-def get_profile(user_id: int):
+def get_profile(
+    user_id: int,
+    current_user: dict = Depends(
+        get_current_user
+    )
+):
     """
-    Return information for a specific user.
+    Retrieve a user profile when the requester is the
+    account owner or an administrator.
     """
+
+    require_self_or_admin(
+        requested_user_id=user_id,
+        current_user=current_user
+    )
 
     return get_user_profile(
         user_id
@@ -145,16 +195,32 @@ def get_profile(user_id: int):
 )
 def update_profile(
     user_id: int,
-    data: UpdateUserRequest
+    data: UpdateUserRequest,
+    current_user: dict = Depends(
+        get_current_user
+    )
 ):
     """
-    Update basic information for an existing user.
+    Update the email of the account owner.
+
+    Administrators may also update a user's email.
+    Role changes are not exposed through this endpoint.
     """
+
+    require_self_or_admin(
+        requested_user_id=user_id,
+        current_user=current_user
+    )
+
+    if data.email is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one update field is required"
+        )
 
     return update_user(
         user_id=user_id,
-        email=data.email,
-        role=data.role
+        email=data.email
     )
 
 
@@ -166,10 +232,21 @@ def update_profile(
     "/users/{user_id}",
     status_code=status.HTTP_200_OK
 )
-def delete_profile(user_id: int):
+def delete_profile(
+    user_id: int,
+    current_user: dict = Depends(
+        get_current_user
+    )
+):
     """
-    Delete a user from the current application storage.
+    Delete an account when the requester is its owner
+    or an administrator.
     """
+
+    require_self_or_admin(
+        requested_user_id=user_id,
+        current_user=current_user
+    )
 
     return delete_user(
         user_id
