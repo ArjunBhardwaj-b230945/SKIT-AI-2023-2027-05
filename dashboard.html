@@ -18,8 +18,12 @@
   <style>
     /* =====================================================
        TaxSathi Dashboard — Page Styles
-       60% Milestone: consolidated responsive cascade,
-       de-duplicated media queries, added breakpoints.
+       20%: layout & main components
+       40%: feature sections & user information
+       60%: consolidated responsive cascade, de-duplicated
+            media queries, added 1024/480/360px breakpoints
+       80%: UI behaviour refinements, session data display
+      100%: CSS finalisation, accessibility, CRLF hygiene
        Uses existing CSS custom properties from base.css.
        ===================================================== */
 
@@ -302,13 +306,17 @@
       display: flex;
       align-items: center;
       gap: var(--space-4);
-      transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
+      transition:
+        box-shadow var(--transition-normal),
+        border-color var(--transition-normal),
+        transform var(--transition-normal);
       min-width: 0;
     }
 
     .status-card:hover {
       box-shadow: var(--shadow-md);
       border-color: var(--color-primary);
+      transform: translateY(-1px);
     }
 
     .status-icon-wrap {
@@ -1147,16 +1155,7 @@
        80% MILESTONE: UI Behaviour Refinements
        ===================================================== */
 
-    /* Status card hover/focus — visual interactivity */
-    .status-card {
-      transition: box-shadow 0.15s ease, transform 0.15s ease;
-    }
-    .status-card:hover {
-      box-shadow: var(--shadow-md);
-      transform: translateY(-1px);
-    }
-
-    /* Session-state badge: ok / warning / expired */
+        /* Session-state badge: ok / warning / expired */
     .session-badge {
       display: inline-flex;
       align-items: center;
@@ -1208,10 +1207,49 @@
     @media (max-width: 640px) {
       .user-meta-item--wide { width: 100%; }
     }
+
+    /* =====================================================
+       100% MILESTONE: Finalization
+       - Merged .status-card CSS duplicates
+       - Utility: .text-success
+       - Skip navigation link
+       - CRLF normalisation
+       ===================================================== */
+
+    /* Text colour utilities */
+    .text-success { color: var(--color-success); }
+
+    /* Skip navigation (keyboard accessibility)
+       .sr-only is defined in base.css.
+       .sr-only--focusable overrides it on keyboard focus,
+       making the skip link visible to keyboard users only. */
+    .sr-only--focusable:focus,
+    .sr-only--focusable:focus-visible {
+      position: static;
+      width: auto;
+      height: auto;
+      margin: 0;
+      padding: var(--space-2) var(--space-5);
+      overflow: visible;
+      clip: auto;
+      white-space: normal;
+      background-color: var(--color-surface);
+      color: var(--color-primary);
+      font-size: var(--font-size-sm);
+      font-weight: var(--font-weight-semibold);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-md);
+      text-decoration: none;
+      z-index: var(--z-tooltip);
+      display: inline-block;
+    }
   </style>
 </head>
 
 <body>
+
+  <!-- Skip navigation: keyboard users bypass nav to reach main content -->
+  <a href="#dashboardMain" class="sr-only sr-only--focusable">Skip to main content</a>
 
   <!-- ••••••••••••••••••••••••••••••••••••••••••••••••
        NAVIGATION
@@ -1400,7 +1438,7 @@
           </div>
           <div class="user-meta-item">
             <span class="user-meta-label">Auth Status</span>
-            <span class="user-meta-value" style="color: var(--color-success);">✓ Verified</span>
+            <span class="user-meta-value text-success">✓ Verified</span>
           </div>
           <div class="user-meta-item">
             <span class="user-meta-label">Signed In</span>
