@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="TaxSathi AI Tax Assistant — Ask tax-related questions and get guidance." />
+  <title>AI Assistant — TaxSathi</title>
+
+  <!-- Google Fonts: Inter (same as dashboard) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Design system (existing shared) -->
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/components.css" />
+
+  <style>
+    /* =====================================================
+       TaxSathi AI Chat Interface — Page Styles
+       20%: chatbot layout and reusable message components
+       Uses existing CSS custom properties from base.css.
+       ===================================================== */
+
+    /* ══ Base layout: full-height flex column ══ */
+    body {
+      min-height: 100vh;
+      background-color: var(--color-bg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ══ Top Navigation Bar (mirrors dashboard-nav) ══ */
+    .chat-nav {
+      background-color: var(--color-surface);
+      border-bottom: 1px solid var(--color-border);
+      padding: var(--space-4) var(--space-8);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow-sm);
+      min-width: 0;
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+
+    .nav-logo:hover { text-decoration: none; }
+
+    .nav-logo-icon {
+      width: 36px;
+      height: 36px;
+      background-color: var(--color-primary);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .nav-logo-name {
+      font-size: var(--font-size-lg);
+      font-weight: var(--font-weight-bold);
+      color: var(--color-text-primary);
+      letter-spacing: -0.01em;
+    }
+
+    .nav-logo-name span { color: var(--color-primary); }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      min-width: 0;
+    }
+
+    .nav-user-badge {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--font-size-sm);
+      color: var(--color-text-secondary);
+      background-color: var(--color-bg);
+      padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-full);
+      border: 1px solid var(--color-border);
+      max-width: 200px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .nav-user-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #4ADE80;
+      flex-shrink: 0;
+      animation: pulseOnline 2.5s infinite;
+    }
+
+    @keyframes pulseOnline {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.45; }
+    }
+
+    #chatUserEmail {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    /* ══ Chat page wrapper ══ */
+    .chat-page {
+      flex: 1;
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: var(--space-8) var(--space-8) 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      box-sizing: border-box;
+      overflow-x: hidden;
+    }
+
+    /* ══ Chat Panel: the full bordered container ══ */
+    .chat-panel {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      background-color: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+      /* bottom border-radius is cut off at composer edge — intentional */
+      margin-bottom: var(--space-8);
+    }
+
+    /* ══ Chat Header ══ */
+    .chat-header {
+      background: linear-gradient(130deg, var(--color-primary-dark) 0%, var(--color-primary) 60%, #2D9E60 100%);
+      padding: var(--space-6) var(--space-8);
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      flex-shrink: 0;
+    }
+
+    /* Assistant avatar icon */
+    .chat-header-avatar {
+      width: 48px;
+      height: 48px;
+      background-color: rgba(255, 255, 255, 0.2);
+      border-radius: var(--radius-lg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 1.5rem;
+      line-height: 1;
+    }
+
+    .chat-header-text { min-width: 0; }
+
+    .chat-header-title {
+      font-size: var(--font-size-xl);
+      font-weight: var(--font-weight-bold);
+      color: #ffffff;
+      letter-spacing: -0.01em;
+      line-height: var(--line-height-tight);
+    }
+
+    .chat-header-subtitle {
+      font-size: var(--font-size-sm);
+      color: rgba(255, 255, 255, 0.80);
+      margin-top: var(--space-1);
+      line-height: var(--line-height-normal);
+    }
+
+    /* ══ Conversation area ══ */
+    .chat-conversation {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: var(--space-6) var(--space-8);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-4);
+      /* Smooth scrolling when JS calls scrollTop */
+      scroll-behavior: smooth;
+    }
+
+    /* ── Message component (reusable structure) ── */
+
+    /*
+     * .chat-message — base for every message bubble row.
+     * Each message consists of:
+     *   .chat-message-body  — the outer alignment wrapper (left or right)
+     *     .chat-message-meta  — role label (sr-only for screen readers, visible as small text)
+     *     .chat-message-bubble — the coloured bubble containing the text
+     */
+    .chat-message {
+      display: flex;
+      flex-direction: column;
+      max-width: 75%;
+      gap: var(--space-1);
+      word-break: break-word;
+      overflow-wrap: break-word;
+      min-width: 0;
+    }
+
+    /* User messages align to the right */
+    .chat-message--user {
+      align-self: flex-end;
+      align-items: flex-end;
+    }
+
+    /* Assistant messages align to the left */
+    .chat-message--assistant {
+      align-self: flex-start;
+      align-items: flex-start;
+    }
+
+    /* Role label above bubble — small, muted */
+    .chat-message-meta {
+      font-size: var(--font-size-xs);
+      font-weight: var(--font-weight-medium);
+      color: var(--color-text-muted);
+      line-height: var(--line-height-tight);
+      padding: 0 var(--space-1);
+    }
+
+    /* The bubble itself */
+    .chat-message-bubble {
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-lg);
+      font-size: var(--font-size-base);
+      line-height: var(--line-height-relaxed);
+      max-width: 100%;
+      min-width: 0;
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+
+    /* User bubble: primary green, white text */
+    .chat-message--user .chat-message-bubble {
+      background-color: var(--color-primary);
+      color: #ffffff;
+      border-bottom-right-radius: var(--radius-sm);
+    }
+
+    /* Assistant bubble: light surface, dark text */
+    .chat-message--assistant .chat-message-bubble {
+      background-color: var(--color-primary-light);
+      color: var(--color-text-primary);
+      border: 1px solid rgba(26, 107, 60, 0.15);
+      border-bottom-left-radius: var(--radius-sm);
+    }
+
+    /* ══ Empty state (shown when no user messages yet) ══ */
+    .chat-empty-hint {
+      text-align: center;
+      color: var(--color-text-muted);
+      font-size: var(--font-size-sm);
+      padding: var(--space-4) 0;
+      font-style: italic;
+      /* Hide once a user message is added — toggled by JS */
+    }
+
+    /* ══ Composer (sticky input + send) ══ */
+    .chat-composer {
+      display: flex;
+      align-items: flex-end;
+      gap: var(--space-3);
+      padding: var(--space-4) var(--space-8);
+      background-color: var(--color-surface);
+      border-top: 1px solid var(--color-border);
+      flex-shrink: 0;
+    }
+
+    /* Text input wrapper */
+    .chat-input-wrapper {
+      flex: 1;
+      min-width: 0;
+      position: relative;
+    }
+
+    /* Textarea — auto-grow via JS; fixed to one line until user types */
+    .chat-input {
+      width: 100%;
+      padding: var(--space-3) var(--space-4);
+      font-size: var(--font-size-base);
+      font-weight: var(--font-weight-normal);
+      color: var(--color-text-primary);
+      background-color: var(--color-surface);
+      border: 1.5px solid var(--color-border);
+      border-radius: var(--radius-md);
+      resize: none;
+      outline: none;
+      line-height: var(--line-height-normal);
+      /* Show one line by default; height grows in JS */
+      min-height: 44px;
+      max-height: 140px;
+      overflow-y: auto;
+      transition:
+        border-color var(--transition-fast),
+        box-shadow var(--transition-fast);
+      /* Prevent horizontal scroll */
+      overflow-x: hidden;
+      word-break: break-word;
+    }
+
+    .chat-input::placeholder { color: var(--color-text-muted); }
+
+    .chat-input:hover:not(:focus) {
+      border-color: #A0A8B0;
+      background-color: #FAFBFC;
+    }
+
+    .chat-input:focus {
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(26, 107, 60, 0.15);
+      background-color: var(--color-surface);
+    }
+
+    /* Send button — square when small, label visible */
+    .chat-send-btn {
+      flex-shrink: 0;
+      /* Vertically align with input baseline */
+      align-self: flex-end;
+    }
+
+    /* ══ Responsive cascade ══ */
+
+    /* Tablet — 768px */
+    @media (max-width: 768px) {
+      .chat-nav {
+        padding: var(--space-3) var(--space-5);
+      }
+
+      .nav-user-badge { display: none; }
+
+      .chat-page {
+        padding: var(--space-5) var(--space-5) 0;
+      }
+
+      .chat-header {
+        padding: var(--space-5) var(--space-6);
+        gap: var(--space-3);
+      }
+
+      .chat-header-avatar {
+        width: 40px;
+        height: 40px;
+        font-size: 1.25rem;
+      }
+
+      .chat-header-title { font-size: var(--font-size-lg); }
+
+      .chat-conversation {
+        padding: var(--space-5) var(--space-6);
+      }
+
+      .chat-composer {
+        padding: var(--space-3) var(--space-5);
+      }
+
+      .chat-message { max-width: 82%; }
+    }
+
+    /* Mobile — 480px */
+    @media (max-width: 480px) {
+      .chat-nav {
+        padding: var(--space-3) var(--space-4);
+      }
+
+      .nav-logo-name { font-size: var(--font-size-base); }
+
+      .chat-page {
+        padding: var(--space-4) var(--space-4) 0;
+      }
+
+      .chat-header {
+        padding: var(--space-4) var(--space-4);
+        gap: var(--space-3);
+      }
+
+      .chat-header-avatar { display: none; }
+
+      .chat-header-title { font-size: var(--font-size-base); }
+      .chat-header-subtitle { font-size: var(--font-size-xs); }
+
+      .chat-conversation {
+        padding: var(--space-4) var(--space-4);
+        gap: var(--space-3);
+      }
+
+      .chat-composer {
+        padding: var(--space-3) var(--space-4);
+        gap: var(--space-2);
+      }
+
+      /* Full-width messages on small screens */
+      .chat-message {
+        max-width: 90%;
+      }
+
+      .chat-send-btn {
+        padding: var(--space-3) var(--space-4);
+        font-size: var(--font-size-sm);
+      }
+    }
+
+    /* Very small — 360px */
+    @media (max-width: 360px) {
+      .chat-message { max-width: 95%; }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Skip navigation link (keyboard accessibility) -->
+  <a href="#chatMain" class="sr-only sr-only--focusable">Skip to main content</a>
+
+  <!-- ════════════════════════════════════════════════
+       NAVIGATION  (mirrors dashboard-nav structure)
+       ════════════════════════════════════════════════ -->
+  <nav class="chat-nav" role="navigation" aria-label="Main navigation">
+
+    <!-- Logo — links back to dashboard -->
+    <a href="dashboard.html" class="nav-logo" aria-label="TaxSathi dashboard home">
+      <div class="nav-logo-icon" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"
+             viewBox="0 0 24 24" fill="none"
+             stroke="white" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <line x1="6" y1="3" x2="18" y2="3"/>
+          <line x1="6" y1="8" x2="18" y2="8"/>
+          <line x1="6" y1="21" x2="18" y2="21"/>
+          <path d="M6 3h6a6 6 0 0 1 0 12H6l12 9"/>
+        </svg>
+      </div>
+      <span class="nav-logo-name">Tax<span>Sathi</span></span>
+    </a>
+
+    <!-- Right: user badge + sign out -->
+    <div class="nav-actions">
+      <div class="nav-user-badge" id="chatUserBadge" aria-live="polite" title="Signed-in account">
+        <span class="nav-user-dot" aria-hidden="true"></span>
+        <span id="chatUserEmail">Authenticated</span>
+      </div>
+      <button
+        id="chatSignOutBtn"
+        class="btn btn-outline btn-sm"
+        type="button"
+        aria-label="Sign out of TaxSathi"
+      >
+        Sign Out
+      </button>
+    </div>
+
+  </nav>
+
+  <!-- ════════════════════════════════════════════════
+       MAIN CONTENT
+       ════════════════════════════════════════════════ -->
+  <main class="chat-page" role="main" id="chatMain">
+
+    <!-- ══ Chat Panel ══════════════════════════════ -->
+    <div class="chat-panel" aria-label="AI Tax Assistant conversation panel">
+
+      <!-- ── Chat Header ─────────────────────────── -->
+      <header class="chat-header" aria-labelledby="chatHeaderTitle">
+        <div class="chat-header-avatar" aria-hidden="true">🤖</div>
+        <div class="chat-header-text">
+          <h1 class="chat-header-title" id="chatHeaderTitle">TaxSathi AI Assistant</h1>
+          <p class="chat-header-subtitle">Your assistant for tax-related questions.</p>
+        </div>
+      </header>
+
+      <!-- ── Conversation Area ────────────────────── -->
+      <section
+        class="chat-conversation"
+        id="chatConversation"
+        role="log"
+        aria-label="Conversation"
+        aria-live="polite"
+        aria-atomic="false"
+        aria-relevant="additions"
+      >
+
+        <!-- Welcome message — static, always present -->
+        <div class="chat-message chat-message--assistant" role="article" aria-label="Assistant message">
+          <span class="chat-message-meta" aria-hidden="true">TaxSathi AI</span>
+          <div class="chat-message-bubble">
+            👋 Hello! I'm the TaxSathi AI Assistant. I'm here to help you with
+            income tax questions — deductions, exemptions, ITR forms, and more.<br><br>
+            <strong>Please note:</strong> AI response generation is coming in a
+            future milestone. For now, you can submit questions and your messages
+            will appear in the conversation. Ask away!
+          </div>
+        </div>
+
+        <!-- Hint shown before the first user message; hidden by JS after first submission -->
+        <p class="chat-empty-hint" id="chatEmptyHint" aria-hidden="true">
+          Type your tax question below and press Send.
+        </p>
+
+      </section>
+
+      <!-- ── Message Composer ─────────────────────── -->
+      <div class="chat-composer" role="form" aria-label="Message composer">
+        <div class="chat-input-wrapper">
+          <label for="chatInput" class="sr-only">Your message</label>
+          <textarea
+            id="chatInput"
+            class="chat-input"
+            name="message"
+            rows="1"
+            placeholder="Ask a tax-related question..."
+            aria-label="Your message"
+            aria-required="true"
+            autocomplete="off"
+            spellcheck="true"
+          ></textarea>
+        </div>
+        <button
+          id="chatSendBtn"
+          class="btn btn-primary btn-sm chat-send-btn"
+          type="button"
+          aria-label="Send message"
+          disabled
+          aria-disabled="true"
+        >
+          Send
+        </button>
+      </div>
+
+    </div><!-- /.chat-panel -->
+
+  </main>
+
+  <!-- ════════════════════════════════════════════════
+       SCRIPT — ES6 module (same pattern as dashboard)
+       ════════════════════════════════════════════════ -->
+  <script type="module" src="js/chat.js"></script>
+
+</body>
+</html>

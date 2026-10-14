@@ -484,12 +484,18 @@
       border-top: 1px solid var(--color-border);
     }
 
-    /* Disabled full-width CTA (inside feature cards) */
+    /* Full-width CTA inside feature cards.
+       Disabled appearance is applied only via [disabled] / [aria-disabled]. */
     .btn-card-cta {
       width: 100%;
       justify-content: center;
       font-size: var(--font-size-sm);
       padding: var(--space-2) var(--space-4);
+    }
+
+    /* Disabled state for .btn-card-cta elements that are not yet available */
+    .btn-card-cta[disabled],
+    .btn-card-cta[aria-disabled="true"] {
       opacity: 0.6;
       cursor: not-allowed;
       pointer-events: none;
@@ -1330,13 +1336,10 @@
                 </svg>
                 File ITR
               </button>
-              <button
+              <a
+                href="chat.html"
                 class="btn btn-ghost-white btn-sm"
-                type="button"
-                disabled
-                aria-disabled="true"
-                title="AI Tax Assistant coming soon"
-                aria-describedby="aiComing"
+                aria-label="Open AI Tax Assistant"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"
                      viewBox="0 0 24 24" fill="none"
@@ -1346,10 +1349,10 @@
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                 </svg>
                 Ask AI Assistant
-              </button>
+              </a>
             </div>
             <p id="itrComing" class="cta-hint sr-only">ITR Filing is not yet available — coming in a future milestone.</p>
-            <p id="aiComing"  class="cta-hint sr-only">AI Tax Assistant is not yet available — coming in a future milestone.</p>
+            <p id="aiComing"  class="cta-hint sr-only">AI Tax Assistant is now available — visit the AI Assistant page.</p>
           </div>
 
           <!-- Right side: session info pill -->
@@ -1582,11 +1585,13 @@
           <span class="feature-detail-footer-note">
             AI Tax Assistant will be available in an upcoming development milestone.
           </span>
-          <button
-            class="btn btn-primary btn-sm btn-card-cta btn-card-cta--inline" type="button" disabled aria-disabled="true" title="Not yet available"
+          <a
+            href="chat.html"
+            class="btn btn-primary btn-sm btn-card-cta btn-card-cta--inline"
+            aria-label="Open AI Tax Assistant"
           >
             Open Assistant
-          </button>
+          </a>
         </div>
       </div>
 
@@ -1737,15 +1742,13 @@
             </ul>
           </div>
           <div class="feature-card-footer">
-            <button
+            <a
+              href="chat.html"
               class="btn btn-primary btn-card-cta"
-              type="button"
-              disabled
-              aria-disabled="true"
-              title="Available in upcoming milestone"
+              aria-label="Open AI Tax Assistant"
             >
               Open AI Assistant
-            </button>
+            </a>
           </div>
         </article>
 
