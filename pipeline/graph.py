@@ -83,7 +83,7 @@ def _gemini(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
     if not key:
         raise EnvironmentError("GOOGLE_API_KEY environment variable is not set.")
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemma-4-31b-it",
         google_api_key=key,
         temperature=temperature,
         max_output_tokens=1024,
@@ -847,33 +847,153 @@ def show_errors_node(state: TaxSathiState) -> TaxSathiState:
 
 def pdf_generation_node(state: TaxSathiState) -> TaxSathiState:
     """
-    STUB — Sprint 5 (21 Dec 2026 – 1 Feb 2027).
-
-    Generates the final downloadable ITR-1 PDF using WeasyPrint.
-
-    Steps to implement:
-      1. Render backend/templates/itr1_template.html with Jinja2,
-         injecting all draft_itr1 field values.
-      2. Convert rendered HTML to PDF bytes via WeasyPrint.
-      3. Store in state["pdf_bytes"].
-
-    The HTML template must replicate the official ITR-1 (Sahaj) layout
-    from the Gazette of India (AY 2026-27 version).
-
-    Implementation sketch:
-      from jinja2 import Environment, FileSystemLoader
-      from weasyprint import HTML
-
-      env      = Environment(loader=FileSystemLoader("backend/templates"))
-      template = env.get_template("itr1_template.html")
-      rendered = template.render(itr=state["draft_itr1"])
-      pdf      = HTML(string=rendered).write_pdf()
-      return {"pdf_bytes": pdf, "pipeline_complete": True}
+    Renders draft_itr1 into a PDF with WeasyPrint and stores bytes in
+    state["pdf_bytes"]. Self-contained: no template file needed.
+    Walks the Pydantic model generically, so it works with any ITR-1 schema.
     """
-    # TODO (Sprint 5): implement WeasyPrint PDF generation
-    print("[STUB] pdf_generation_node — PDF generation not yet implemented.")
-    return {"pipeline_complete": False}
+    import html as _html
+    import re
+    from enum import Enum
 
+    draft = state.get("draft_itr1")
+    if draft is None:
+        return {
+            "errors": ["pdf_generation: draft_itr1 is None — nothing to render."],
+            "pipeline_complete": False,
+        }
+
+    try:
+        from weasyprint import HTML
+
+        esc = lambda s: _html.escape(str(s))
+        non_money = ("aadhaar", "pan", "mobile", "phone", "pin", "ifsc",
+                     "account", "year", "count", "number", "code", "age")
+
+        def inr(v) -> str:
+            n = int(round(float(v)))
+            s = str(abs(n))
+            if len(s) > 3:
+                s = re.sub(r"(\d)(?=(\d\d)+$)", r"\1,", s[:-3]) + "," + s[-3:]
+            return f"{'-' if n < 0 else ''}₹{s}"
+
+        def label(key: str) -> str:
+            m = re.match(r"^(.*?)_([A-Z]\d{1,2}[a-z]?)$", key)
+            if m:
+                return f"{m.group(2)} — {m.group(1).replace('_', ' ').title()}"
+            return key.replace("_", " ").title()
+
+        def fmt(key: str, v) -> str:
+            k = key.lower()
+            if v is None or v == "":
+                return "—"
+            if isinstance(v, Enum):
+                v = v.value
+            if isinstance(v, bool):
+                return "Yes" if v else "No"
+            if hasattr(v, "strftime"):
+                return v.strftime("%d/%m/%Y")
+            if isinstance(v, (int, float)):
+                return str(v) if any(h in k for h in non_money) else inr(v)
+            s = str(v)
+            if "aadhaar" in k and len(s) >= 4:
+                return "XXXX XXXX " + s[-4:]
+            if "account" in k and "ifsc" not in k and len(s) > 4:
+                return "X" * (len(s) - 4) + s[-4:]
+            return s
+
+        def walk(title: str, data: dict, out: list) -> None:
+            rows, tables, kids = [], [], []
+            for key, val in data.items():
+                if key == "flags":
+                    continue
+                if isinstance(val, dict):
+                    kids.append((f"{title} › {label(key)}", val))
+                elif isinstance(val, list) and val and all(isinstance(i, dict) for i in val):
+                    cols = list(dict.fromkeys(c for i in val for c in i))
+                    head = "".join(f"<th>{esc(label(c))}</th>" for c in cols)
+                    body = "".join(
+                        "<tr>" + "".join(f"<td>{esc(fmt(c, i.get(c)))}</td>" for c in cols) + "</tr>"
+                        for i in val
+                    )
+                    tables.append(
+                        f"<h3>{esc(label(key))}</h3>"
+                        f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+                    )
+                elif isinstance(val, list):
+                    rows.append((key, ", ".join(fmt(key, i) for i in val) or "—"))
+                else:
+                    rows.append((key, fmt(key, val)))
+            if rows or tables:
+                table = ""
+                if rows:
+                    table = "<table>" + "".join(
+                        f"<tr><td>{esc(label(k))}</td><td class='v'>{esc(v)}</td></tr>"
+                        for k, v in rows
+                    ) + "</table>"
+                out.append(f"<h2>{esc(title)}</h2>{table}{''.join(tables)}")
+            for t, d in kids:
+                walk(t, d, out)
+
+        if hasattr(draft, "model_dump"):
+            data = draft.model_dump(mode="python")
+        elif hasattr(draft, "dict"):
+            data = draft.dict()
+        else:
+            data = dict(draft)
+
+        parts: list[str] = []
+        for key, val in data.items():
+            if key != "flags" and isinstance(val, dict):
+                walk(label(key), val, parts)
+
+        flags_html = ""
+        flags = getattr(draft, "flags", None) or []
+        if flags:
+            items = "".join(
+                f"<li><b>[{esc(str(getattr(getattr(f, 'severity', ''), 'value', getattr(f, 'severity', ''))).upper())}]</b> "
+                f"{esc(getattr(f, 'issue', f))}</li>"
+                for f in flags
+            )
+            flags_html = f"<h2 class='warn'>Items to verify</h2><ul>{items}</ul>"
+
+        doc = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+          @page {{ size: A4; margin: 18mm 14mm;
+            @bottom-left {{ content: "TaxSathi draft - not filed"; font-size: 8pt; color: #666; }}
+            @bottom-right {{ content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #666; }} }}
+          body {{ font-family: "DejaVu Sans", Arial, sans-serif; font-size: 9.5pt; color: #111; }}
+          .banner {{ background: #fff4e5; border: 1px solid #f0b36b; padding: 6px 10px; font-size: 8.5pt; margin-bottom: 10px; }}
+          h1 {{ font-size: 15pt; margin: 0 0 8px; }}
+          h2 {{ font-size: 11pt; background: #1f3a5f; color: #fff; padding: 4px 8px; margin: 14px 0 0; page-break-after: avoid; }}
+          h2.warn {{ background: #d9534f; }}
+          h3 {{ font-size: 9.5pt; margin: 10px 0 3px; page-break-after: avoid; }}
+          table {{ width: 100%; border-collapse: collapse; }}
+          tr {{ page-break-inside: avoid; }}
+          th, td {{ border: 1px solid #c9c9c9; padding: 3px 6px; vertical-align: top; }}
+          th {{ background: #eef2f7; text-align: left; font-size: 8.5pt; }}
+          td.v {{ text-align: right; width: 38%; }}
+        </style></head><body>
+        <div class="banner"><b>DRAFT — NOT FILED.</b> AI-assisted preparation for AY 2026-27.
+        Verify every figure against Form 16 / Form 26AS and consult a Chartered Accountant before filing.</div>
+        <h1>ITR-1 (Sahaj) — Draft Summary, AY 2026-27</h1>
+        {''.join(parts)}{flags_html}
+        </body></html>"""
+
+        pdf_bytes = HTML(string=doc).write_pdf()
+
+        out_dir = os.getenv("PDF_OUTPUT_DIR")
+        if out_dir:
+            from pathlib import Path
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            (Path(out_dir) / f"itr1_draft_{stamp}.pdf").write_bytes(pdf_bytes)
+
+        return {"pdf_bytes": pdf_bytes, "pipeline_complete": True}
+
+    except Exception as e:
+        return {
+            "errors": [f"pdf_generation_node failed: {type(e).__name__}: {e}"],
+            "pipeline_complete": False,
+        }
 
 # ================================================================================
 # GRAPH COMPILATION
