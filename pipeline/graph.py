@@ -845,156 +845,629 @@ def show_errors_node(state: TaxSathiState) -> TaxSathiState:
     return updates
 
 
-def pdf_generation_node(state: TaxSathiState) -> TaxSathiState:
-    """
-    Renders draft_itr1 into a PDF with WeasyPrint and stores bytes in
-    state["pdf_bytes"]. Self-contained: no template file needed.
-    Walks the Pydantic model generically, so it works with any ITR-1 schema.
-    """
-    import html as _html
+def pdf_generation_node(state: TaxSathiState) -> dict:
+    # WeasyPrint is imported lazily so it is only required when this node runs.
+    import os
     import re
+    import html as _html
+    from datetime import datetime, date
     from enum import Enum
-
+    from pathlib import Path
+ 
+    # ── Guard: nothing to render ──────────────────────────────────────────────
     draft = state.get("draft_itr1")
     if draft is None:
         return {
-            "errors": ["pdf_generation: draft_itr1 is None — nothing to render."],
+            "errors":            ["pdf_generation: draft_itr1 is None — nothing to render."],
             "pipeline_complete": False,
         }
-
+ 
     try:
         from weasyprint import HTML
-
-        esc = lambda s: _html.escape(str(s))
-        non_money = ("aadhaar", "pan", "mobile", "phone", "pin", "ifsc",
-                     "account", "year", "count", "number", "code", "age")
-
-        def inr(v) -> str:
-            n = int(round(float(v)))
-            s = str(abs(n))
-            if len(s) > 3:
-                s = re.sub(r"(\d)(?=(\d\d)+$)", r"\1,", s[:-3]) + "," + s[-3:]
-            return f"{'-' if n < 0 else ''}₹{s}"
-
-        def label(key: str) -> str:
-            m = re.match(r"^(.*?)_([A-Z]\d{1,2}[a-z]?)$", key)
-            if m:
-                return f"{m.group(2)} — {m.group(1).replace('_', ' ').title()}"
-            return key.replace("_", " ").title()
-
-        def fmt(key: str, v) -> str:
-            k = key.lower()
-            if v is None or v == "":
-                return "—"
-            if isinstance(v, Enum):
-                v = v.value
-            if isinstance(v, bool):
-                return "Yes" if v else "No"
-            if hasattr(v, "strftime"):
-                return v.strftime("%d/%m/%Y")
-            if isinstance(v, (int, float)):
-                return str(v) if any(h in k for h in non_money) else inr(v)
-            s = str(v)
-            if "aadhaar" in k and len(s) >= 4:
-                return "XXXX XXXX " + s[-4:]
-            if "account" in k and "ifsc" not in k and len(s) > 4:
-                return "X" * (len(s) - 4) + s[-4:]
-            return s
-
-        def walk(title: str, data: dict, out: list) -> None:
-            rows, tables, kids = [], [], []
-            for key, val in data.items():
-                if key == "flags":
-                    continue
-                if isinstance(val, dict):
-                    kids.append((f"{title} › {label(key)}", val))
-                elif isinstance(val, list) and val and all(isinstance(i, dict) for i in val):
-                    cols = list(dict.fromkeys(c for i in val for c in i))
-                    head = "".join(f"<th>{esc(label(c))}</th>" for c in cols)
-                    body = "".join(
-                        "<tr>" + "".join(f"<td>{esc(fmt(c, i.get(c)))}</td>" for c in cols) + "</tr>"
-                        for i in val
-                    )
-                    tables.append(
-                        f"<h3>{esc(label(key))}</h3>"
-                        f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
-                    )
-                elif isinstance(val, list):
-                    rows.append((key, ", ".join(fmt(key, i) for i in val) or "—"))
-                else:
-                    rows.append((key, fmt(key, val)))
-            if rows or tables:
-                table = ""
-                if rows:
-                    table = "<table>" + "".join(
-                        f"<tr><td>{esc(label(k))}</td><td class='v'>{esc(v)}</td></tr>"
-                        for k, v in rows
-                    ) + "</table>"
-                out.append(f"<h2>{esc(title)}</h2>{table}{''.join(tables)}")
-            for t, d in kids:
-                walk(t, d, out)
-
-        if hasattr(draft, "model_dump"):
-            data = draft.model_dump(mode="python")
-        elif hasattr(draft, "dict"):
-            data = draft.dict()
-        else:
-            data = dict(draft)
-
-        parts: list[str] = []
-        for key, val in data.items():
-            if key != "flags" and isinstance(val, dict):
-                walk(label(key), val, parts)
-
-        flags_html = ""
-        flags = getattr(draft, "flags", None) or []
-        if flags:
-            items = "".join(
-                f"<li><b>[{esc(str(getattr(getattr(f, 'severity', ''), 'value', getattr(f, 'severity', ''))).upper())}]</b> "
-                f"{esc(getattr(f, 'issue', f))}</li>"
-                for f in flags
-            )
-            flags_html = f"<h2 class='warn'>Items to verify</h2><ul>{items}</ul>"
-
-        doc = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-          @page {{ size: A4; margin: 18mm 14mm;
-            @bottom-left {{ content: "TaxSathi draft - not filed"; font-size: 8pt; color: #666; }}
-            @bottom-right {{ content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #666; }} }}
-          body {{ font-family: "DejaVu Sans", Arial, sans-serif; font-size: 9.5pt; color: #111; }}
-          .banner {{ background: #fff4e5; border: 1px solid #f0b36b; padding: 6px 10px; font-size: 8.5pt; margin-bottom: 10px; }}
-          h1 {{ font-size: 15pt; margin: 0 0 8px; }}
-          h2 {{ font-size: 11pt; background: #1f3a5f; color: #fff; padding: 4px 8px; margin: 14px 0 0; page-break-after: avoid; }}
-          h2.warn {{ background: #d9534f; }}
-          h3 {{ font-size: 9.5pt; margin: 10px 0 3px; page-break-after: avoid; }}
-          table {{ width: 100%; border-collapse: collapse; }}
-          tr {{ page-break-inside: avoid; }}
-          th, td {{ border: 1px solid #c9c9c9; padding: 3px 6px; vertical-align: top; }}
-          th {{ background: #eef2f7; text-align: left; font-size: 8.5pt; }}
-          td.v {{ text-align: right; width: 38%; }}
-        </style></head><body>
-        <div class="banner"><b>DRAFT — NOT FILED.</b> AI-assisted preparation for AY 2026-27.
-        Verify every figure against Form 16 / Form 26AS and consult a Chartered Accountant before filing.</div>
-        <h1>ITR-1 (Sahaj) — Draft Summary, AY 2026-27</h1>
-        {''.join(parts)}{flags_html}
-        </body></html>"""
-
-        pdf_bytes = HTML(string=doc).write_pdf()
-
-        out_dir = os.getenv("PDF_OUTPUT_DIR")
-        if out_dir:
-            from pathlib import Path
-            Path(out_dir).mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            (Path(out_dir) / f"itr1_draft_{stamp}.pdf").write_bytes(pdf_bytes)
-
-        return {"pdf_bytes": pdf_bytes, "pipeline_complete": True}
-
-    except Exception as e:
+    except ImportError:
         return {
-            "errors": [f"pdf_generation_node failed: {type(e).__name__}: {e}"],
+            "errors":            ["pdf_generation: WeasyPrint is not installed. Run: pip install weasyprint"],
             "pipeline_complete": False,
         }
-
+ 
+    mask_pii = os.getenv("PDF_MASK_PII", "").strip() == "1"
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # HELPERS
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    def unwrap(value):
+        """Return Enum.value for enums, otherwise the value unchanged."""
+        return value.value if isinstance(value, Enum) else value
+ 
+    def esc(value) -> str:
+        """HTML-escape any value safely (enums unwrapped, None -> '')."""
+        value = unwrap(value)
+        return _html.escape(str(value) if value is not None else "")
+ 
+    def to_num(value, default=0):
+        """Coerce int/float/Decimal/numeric-str to a number; else default."""
+        if value is None or isinstance(value, bool):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+ 
+    def inr(value) -> str:
+        """
+        Indian currency format with ₹ and lakh/crore grouping; handles negatives.
+        1500000 -> ₹15,00,000 | -25000 -> -₹25,000
+        """
+        if value is None:
+            return "—"
+        try:
+            n = int(round(float(value)))
+        except (TypeError, ValueError):
+            return str(value)
+        prefix = "-₹" if n < 0 else "₹"
+        s = str(abs(n))
+        if len(s) > 3:
+            s = re.sub(r"(\d)(?=(\d\d)+$)", r"\1,", s[:-3]) + "," + s[-3:]
+        return f"{prefix}{s}"
+ 
+    _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$")
+ 
+    def fmt_date(value) -> str:
+        """datetime/date or ISO string -> dd/mm/yyyy; anything else -> str."""
+        if hasattr(value, "strftime"):
+            return value.strftime("%d/%m/%Y")
+        m = _ISO_DATE.match(str(value))
+        if m:
+            return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+        return str(value)
+ 
+    def mask_account(acno: str) -> str:
+        acno = str(acno or "")
+        return ("X" * (len(acno) - 4) + acno[-4:]) if len(acno) > 4 else acno
+ 
+    def mask_pan(s: str) -> str:
+        return ("XXXXXX" + s[-4:]) if len(s) >= 10 else s
+ 
+    def mask_mobile(s: str) -> str:
+        digits = re.sub(r"\D", "", s)
+        return ("XXXXXX" + digits[-4:]) if len(digits) >= 4 else s
+ 
+    def mask_email(s: str) -> str:
+        if "@" not in s:
+            return s
+        user, domain = s.split("@", 1)
+        return (user[:1] + "***@" + domain) if user else s
+ 
+    MONEY_KEYS = (
+        "salary", "income", "deduction", "tax", "cess", "rebate",
+        "interest", "fee", "refund", "payable", "credit", "tds",
+        "tcs", "hra", "allowance", "perquisite", "profit", "total",
+        "gross", "net", "sec_80", "relief", "pension", "rent",
+    )
+    NON_MONEY_KEYS = (
+        "pan", "tan", "aadhaar", "mobile", "phone", "pin", "ifsc",
+        "account_number", "year", "count", "number", "code", "loop",
+        "max", "section", "serial", "bsr",
+    )
+ 
+    def fmt_field(key: str, value) -> str:
+        """Format one value by key name and type (masking, dates, INR)."""
+        value = unwrap(value)
+        if value is None or value == "":
+            return "Not provided"
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+ 
+        k = key.lower()
+        s = str(value)
+ 
+        # Sensitive-field masking
+        if "aadhaar" in k:
+            digits = re.sub(r"\D", "", s)
+            return ("XXXX XXXX " + digits[-4:]) if len(digits) >= 4 else "XXXX XXXX XXXX"
+        if "account_number" in k:
+            return mask_account(s)
+        if mask_pii:
+            if k == "pan":
+                return mask_pan(s)
+            if "mobile" in k or "phone" in k:
+                return mask_mobile(s)
+            if "email" in k:
+                return mask_email(s)
+ 
+        # Dates
+        if hasattr(value, "strftime") or "date" in k:
+            return fmt_date(value)
+ 
+        # Numbers
+        if isinstance(value, (int, float)) or type(value).__name__ == "Decimal":
+            if any(m in k for m in NON_MONEY_KEYS):
+                return s
+            if any(m in k for m in MONEY_KEYS):
+                return inr(value)
+        return s
+ 
+    def row(label: str, value, money: bool = False, key: str | None = None) -> str:
+        """Two-column row. `key` (schema-style name) drives masking/format."""
+        if money and value is not None:
+            display = inr(value)
+        else:
+            display = fmt_field(key or label, value)
+        cls = " class='money'" if money else ""
+        return f"<tr><td class='lbl'>{esc(label)}</td><td{cls}>{esc(display)}</td></tr>"
+ 
+    def section(title: str, rows_html: str, warn: bool = False, keep: bool = True) -> str:
+        """Labelled key/value section. keep=True avoids splitting it over pages."""
+        if not rows_html.strip():
+            return ""
+        cls = ("warn " if warn else "") + ("keep" if keep else "")
+        return (
+            f"<div class='section {cls.strip()}'>"
+            f"<div class='sec-title'>{esc(title)}</div>"
+            f"<table>{rows_html}</table>"
+            f"</div>"
+        )
+ 
+    def th_row(*cols: str) -> str:
+        return "<tr>" + "".join(f"<th>{esc(c)}</th>" for c in cols) + "</tr>"
+ 
+    def data_section(title: str, header_html: str, body_html: str, warn: bool = False) -> str:
+        """Multi-column table that may split across pages; header repeats."""
+        cls = "section warn" if warn else "section"
+        return (
+            f"<div class='{cls}'>"
+            f"<div class='sec-title'>{esc(title)}</div>"
+            f"<table><thead>{header_html}</thead><tbody>{body_html}</tbody></table>"
+            f"</div>"
+        )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # EXTRACT SCHEMA OBJECTS
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    def g(obj, *attrs, default=None):
+        """Safe nested attribute getter; returns default for missing/None."""
+        for attr in attrs:
+            if obj is None:
+                return default
+            obj = getattr(obj, attr, None)
+        return obj if obj is not None else default
+ 
+    def g_any(obj, *names, default=None):
+        """First non-None attribute among several candidate names."""
+        for name in names:
+            val = getattr(obj, name, None) if obj is not None else None
+            if val is not None:
+                return val
+        return default
+ 
+    pa    = getattr(draft, "part_a", None)
+    pb    = getattr(draft, "part_b", None)
+    pc    = getattr(draft, "part_c", None)
+    part_d = getattr(draft, "part_d", None)
+    ded   = getattr(pc, "deductions", None) if pc is not None else None
+    sits  = getattr(draft, "schedule_it", None) or []
+    stds  = getattr(draft, "schedule_tds", None) or []
+    banks = getattr(draft, "bank_accounts", None) or []
+    flags = getattr(draft, "flags", None) or []
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # PART A — GENERAL INFORMATION
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    regime_raw = unwrap(g(pa, "opting_out_115bac"))
+    regime_display = (
+        "Old Regime (opted out u/s 115BAC via Form 10IEA)"
+        if str(regime_raw).upper() == "YES"
+        else "New Regime (default u/s 115BAC — Finance Act 2025)"
+    )
+ 
+    full_name = " ".join(str(p) for p in (
+        g(pa, "first_name"), g(pa, "middle_name"), g(pa, "last_name")
+    ) if p) or "Not provided"
+ 
+    part_a_rows = (
+        row("Full Name",              full_name)
+        + row("PAN",                  g(pa, "pan"),              key="pan")
+        + row("Aadhaar Number",       g(pa, "aadhaar_number"),   key="aadhaar_number")
+        + row("Date of Birth",        g(pa, "date_of_birth"),    key="date_of_birth")
+        + row("Primary Mobile",       g(pa, "primary_mobile"),   key="primary_mobile")
+        + row("Primary Email",        g(pa, "primary_email"),    key="primary_email")
+        + row("Address",              g(pa, "address_line"),     key="address_line")
+        + row("Town / City",          g(pa, "town_city"),        key="town_city")
+        + row("State",                g(pa, "state"),            key="state")
+        + row("PIN Code",             g(pa, "pin_code"),         key="pin_code")
+        + row("Filed Under Section",  g(pa, "filed_under_section"),  key="filed_under_section")
+        + row("Nature of Employment", g(pa, "nature_of_employment"), key="nature_of_employment")
+        + row("Tax Regime",           regime_display)
+        + row("Assessment Year",      "2026-27")
+    )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # PART B — GROSS TOTAL INCOME
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    part_b_rows = (
+        row("B1 — Income from Salaries",            g(pb, "salary_gross_B1"),          money=True)
+        + row("B2 — Income from House Property",    g(pb, "house_property_income_B2"), money=True)
+        + row("B3 — Income from Other Sources",     g(pb, "other_sources_income_B3"),  money=True)
+        + row("B4 — Gross Total Income (B1+B2+B3)", g(pb, "gross_total_income_B4"),    money=True)
+    )
+    if g(pb, "gross_total_income_B4_is_partial"):
+        part_b_rows += row("⚠ Note", "B4 is a partial total — house property income not confirmed")
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # PART C — DEDUCTIONS AND TOTAL INCOME
+    # (C2 / C3 are intentionally absent: this schema folds them into C1.)
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    def ded_row(label: str, attr: str) -> str:
+        val = g(ded, attr)
+        if val is None or to_num(val) == 0:
+            return ""
+        return row(label, val, money=True)
+ 
+    part_c_deduction_rows = (
+        ded_row("C1 — 80C / 80CCC / 80CCD(1) (combined)", "sec_80c_80ccc_80ccd1_combined")
+        + ded_row("C4 — 80CCD(1B) — NPS (extra ₹50,000)",  "sec_80ccd_1b")
+        + ded_row("C5 — 80CCD(2) — Employer NPS",          "sec_80ccd_2")
+        + ded_row("C6 — 80D — Health Insurance",           "sec_80d")
+        + ded_row("C7 — 80DD — Dependent Disability",      "sec_80dd")
+        + ded_row("C8 — 80DDB — Specified Disease",        "sec_80ddb")
+        + ded_row("C9 — 80E — Education Loan",             "sec_80e")
+        + ded_row("C10 — 80EE — Home Loan (old)",          "sec_80ee")
+        + ded_row("C11 — 80EEA — Affordable Housing",      "sec_80eea")
+        + ded_row("C12 — 80EEB — Electric Vehicle",        "sec_80eeb")
+        + ded_row("C13 — 80G — Donations",                 "sec_80g")
+        + ded_row("C14 — 80GG — House Rent (no HRA)",      "sec_80gg")
+        + ded_row("C15 — 80GGC — Political Party",         "sec_80ggc")
+        + ded_row("C16 — 80TTA — Savings Interest",        "sec_80tta")
+        + ded_row("C17 — 80TTB — Senior Citizen Interest", "sec_80ttb")
+        + ded_row("C18 — 80U — Self Disability",           "sec_80u")
+        + ded_row("C18a — 80CCH — Agnipath",               "sec_80cch")
+    )
+ 
+    for entry in (g(ded, "unmapped_entries") or []):
+        sec = unwrap(g(entry, "section")) or "Unknown"
+        amt = g(entry, "deductible_amount")
+        part_c_deduction_rows += row(
+            f"⚠ Unmapped — {sec}",
+            f"{inr(amt)} (not auto-mapped to ITR-1 field — verify manually)",
+        )
+ 
+    # Fallback names guard against label/schema drift (C19/C20 vs C1/C2).
+    total_deductions = g_any(pc, "total_deductions_C19", "total_deductions_C1", "total_deductions")
+    total_income     = g_any(pc, "total_income_C20", "total_income_C2", "total_income")
+ 
+    part_c_summary_rows = (
+        row("C19 — Total Deductions", total_deductions, money=True)
+        + row("C20 — Total Income",   total_income,     money=True)
+    )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # PART D — TAX COMPUTATION
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    part_d_rows = (
+        row("D1 — Tax on Total Income",                 g(part_d, "tax_payable_on_total_income_D1"), money=True)
+        + row("D2 — Rebate u/s 87A",                    g(part_d, "rebate_87a_D2"),                  money=True)
+        + row("D3 — Tax after Rebate",                  g(part_d, "tax_after_rebate_D3"),            money=True)
+        + row("D4 — Health & Education Cess @ 4%",      g(part_d, "health_education_cess_D4"),       money=True)
+        + row("D5 — Total Tax and Cess",                g(part_d, "total_tax_and_cess_D5"),          money=True)
+        + row("D6 — Relief u/s 89 (requires Form 10E)", g(part_d, "relief_89_D6"),                   money=True)
+        + row("D7 — Interest u/s 234A (late filing)",   g(part_d, "interest_234a_D7"),               money=True)
+        + row("D8 — Interest u/s 234B (advance tax)",   g(part_d, "interest_234b_D8"),               money=True)
+        + row("D9 — Interest u/s 234C (installments)",  g(part_d, "interest_234c_D9"),               money=True)
+        + row("D10 — Fee u/s 234F (belated filing)",    g(part_d, "fee_234f_D10"),                   money=True)
+        + row("D11 — Total Tax, Fee and Interest",      g(part_d, "total_tax_fee_interest_D11"),     money=True)
+        + row("D12 — Total Taxes Paid",                 g(part_d, "total_taxes_paid_D12"),           money=True)
+        + row("D13 — Amount Payable",                   g(part_d, "amount_payable_D13"),             money=True)
+        + row("D14 — Refund Due",                       g(part_d, "refund_D14"),                     money=True)
+    )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # PART E — BANK ACCOUNTS
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    bank_body = ""
+    for acc in banks:
+        bank_body += (
+            "<tr>"
+            f"<td>{esc(g(acc, 'ifsc_code'))}</td>"
+            f"<td>{esc(g(acc, 'bank_name'))}</td>"
+            f"<td>{esc(mask_account(g(acc, 'account_number', default='')))}</td>"
+            f"<td>{esc(g(acc, 'account_type'))}</td>"
+            f"<td>{'✓' if g(acc, 'selected_for_refund') else ''}</td>"
+            "</tr>"
+        )
+    part_e_html = (
+        data_section(
+            "Part E — Bank Accounts",
+            th_row("IFSC Code", "Bank Name", "Account Number", "Type", "For Refund"),
+            bank_body,
+        )
+        if banks else ""
+    )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # SCHEDULE IT — ADVANCE / SELF-ASSESSMENT TAX
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    sit_body = ""
+    sit_total = 0.0
+    for entry in sits:
+        amt = to_num(g(entry, "tax_paid"))
+        sit_total += amt
+        sit_body += (
+            "<tr>"
+            f"<td>{esc(g(entry, 'bsr_code'))}</td>"
+            f"<td>{esc(fmt_date(g(entry, 'date_of_deposit')) if g(entry, 'date_of_deposit') else '')}</td>"
+            f"<td>{esc(g(entry, 'challan_serial_no'))}</td>"
+            f"<td class='money'>{esc(inr(amt))}</td>"
+            "</tr>"
+        )
+    if sits:
+        sit_body += (
+            f"<tr class='total'><td colspan='3'><b>Total</b></td>"
+            f"<td class='money'><b>{esc(inr(sit_total))}</b></td></tr>"
+        )
+    schedule_it_html = (
+        data_section(
+            "Schedule IT — Advance Tax / Self-Assessment Tax",
+            th_row("BSR Code", "Date of Deposit", "Challan No.", "Amount (₹)"),
+            sit_body,
+        )
+        if sits else ""
+    )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # SCHEDULE TDS — TDS / TCS CREDITS
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    std_body = ""
+    std_total_claimed = 0.0
+    for entry in stds:
+        claimed = to_num(g(entry, "tds_claimed_this_year"))
+        std_total_claimed += claimed
+        std_body += (
+            "<tr>"
+            f"<td>{esc(g(entry, 'tan_or_pan'))}</td>"
+            f"<td>{esc(g(entry, 'deductor_name'))}</td>"
+            f"<td>{esc(g(entry, 'section'))}</td>"
+            f"<td class='money'>{esc(inr(g(entry, 'gross_payment')))}</td>"
+            f"<td class='money'>{esc(inr(g(entry, 'tax_deducted')))}</td>"
+            f"<td class='money'>{esc(inr(claimed))}</td>"
+            "</tr>"
+        )
+    if stds:
+        std_body += (
+            f"<tr class='total'><td colspan='5'><b>Total TDS Claimed</b></td>"
+            f"<td class='money'><b>{esc(inr(std_total_claimed))}</b></td></tr>"
+        )
+    schedule_tds_html = (
+        data_section(
+            "Schedule TDS — TDS / TCS Credits",
+            th_row("TAN / PAN", "Deductor Name", "Section",
+                   "Gross Payment (₹)", "TDS Deducted (₹)", "TDS Claimed (₹)"),
+            std_body,
+        )
+        if stds else ""
+    )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # VALIDATION FLAGS
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    def severity_value(f) -> str:
+        sev = unwrap(getattr(f, "severity", None))
+        return str(sev).upper() if sev is not None else "INFO"
+ 
+    def severity_class(sev: str) -> str:
+        return {"ERROR": "flag-error", "WARNING": "flag-warn", "INFO": "flag-info"}.get(sev, "flag-info")
+ 
+    flags_html = ""
+    if flags:
+        flag_body = ""
+        for f in flags:
+            sev = severity_value(f)
+            flag_body += (
+                f"<tr class='{severity_class(sev)}'>"
+                f"<td><b>{esc(sev)}</b></td>"
+                f"<td>{esc(getattr(f, 'stage', ''))}</td>"
+                f"<td>{esc(getattr(f, 'field', ''))}</td>"
+                f"<td>{esc(getattr(f, 'issue', str(f)))}</td>"
+                "</tr>"
+            )
+        flags_html = data_section(
+            "Items to Verify Before Filing",
+            th_row("Severity", "Stage", "Field", "Issue"),
+            flag_body,
+            warn=True,
+        )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # REFUND / PAYABLE BANNER
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    refund_amt  = to_num(g(part_d, "refund_D14"))
+    payable_amt = to_num(g(part_d, "amount_payable_D13"))
+ 
+    if refund_amt > 0:
+        summary_banner = (
+            f"<div class='summary refund'>REFUND DUE: {esc(inr(refund_amt))}"
+            f" — Credit to selected bank account after processing</div>"
+        )
+    elif payable_amt > 0:
+        summary_banner = (
+            f"<div class='summary payable'>TAX PAYABLE: {esc(inr(payable_amt))}"
+            f" — Pay via Challan 280 (Self-Assessment) before filing</div>"
+        )
+    else:
+        summary_banner = (
+            "<div class='summary nil'>NIL BALANCE — Tax fully paid. No refund or payment due.</div>"
+        )
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # ASSEMBLE HTML
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    generated_at = datetime.now().strftime("%d %b %Y, %I:%M %p")
+ 
+    html_doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @page {{
+    size: A4;
+    margin: 15mm 12mm 18mm 12mm;
+    @bottom-left {{
+      content: "TaxSathi DRAFT — NOT FILED — AI-assisted preparation";
+      font-size: 7.5pt; color: #888; font-family: Arial, sans-serif;
+    }}
+    @bottom-right {{
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 7.5pt; color: #888; font-family: Arial, sans-serif;
+    }}
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: "DejaVu Sans", Arial, sans-serif;
+    font-size: 9pt;
+    color: #111;
+    line-height: 1.4;
+  }}
+ 
+  .header {{
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+    border-bottom: 2px solid #1f3a5f;
+    padding-bottom: 6px;
+  }}
+  .header h1 {{ font-size: 13pt; color: #1f3a5f; font-weight: bold; }}
+  .header .meta {{ font-size: 7.5pt; color: #666; text-align: right; }}
+ 
+  .draft-banner {{
+    background: #fff4e5;
+    border: 1.5px solid #f0a500;
+    padding: 5px 10px;
+    font-size: 8pt;
+    margin-bottom: 8px;
+    border-radius: 2px;
+  }}
+ 
+  .summary {{
+    padding: 6px 12px;
+    font-size: 10pt;
+    font-weight: bold;
+    margin-bottom: 10px;
+    border-radius: 2px;
+  }}
+  .summary.refund  {{ background: #e6f4ea; border: 1.5px solid #34a853; color: #1a7035; }}
+  .summary.payable {{ background: #fce8e6; border: 1.5px solid #d93025; color: #a31c12; }}
+  .summary.nil     {{ background: #e8f0fe; border: 1.5px solid #4285f4; color: #1a56c4; }}
+ 
+  .section {{ margin-bottom: 10px; }}
+  .section.keep {{ page-break-inside: avoid; }}
+  .sec-title {{
+    background: #1f3a5f;
+    color: #fff;
+    font-size: 9.5pt;
+    font-weight: bold;
+    padding: 4px 8px;
+    page-break-after: avoid;
+  }}
+  .section.warn .sec-title {{ background: #c0392b; }}
+ 
+  table {{ width: 100%; border-collapse: collapse; font-size: 8.5pt; }}
+  thead {{ display: table-header-group; }}
+  tr {{ page-break-inside: avoid; }}
+  th {{
+    background: #dde4ee;
+    border: 1px solid #b0bbc8;
+    padding: 3px 6px;
+    text-align: left;
+    font-weight: bold;
+  }}
+  td {{ border: 1px solid #c9c9c9; padding: 3px 6px; vertical-align: top; }}
+  td.lbl {{ width: 55%; color: #333; }}
+  td.money {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  tr.total td {{ background: #eef2f7; font-weight: bold; }}
+ 
+  tr.flag-error td {{ background: #fce8e6; }}
+  tr.flag-warn  td {{ background: #fef7e0; }}
+  tr.flag-info  td {{ background: #e8f0fe; }}
+</style>
+</head>
+<body>
+ 
+<div class="header">
+  <div>
+    <h1>ITR-1 (Sahaj) — Draft Summary</h1>
+    <div style="font-size:8pt; color:#555;">
+      Assessment Year: 2026-27 &nbsp;|&nbsp; Financial Year: 2025-26
+    </div>
+  </div>
+  <div class="meta">
+    Generated by TaxSathi<br>
+    {esc(generated_at)}<br>
+    Powered by AI — Not filed
+  </div>
+</div>
+ 
+<div class="draft-banner">
+  <b>⚠ DRAFT — NOT FILED.</b> This is an AI-assisted preparation for review purposes only.
+  Every figure must be verified against original Form 16 and Form 26AS.
+  Consult a Chartered Accountant before submitting to the Income Tax portal.
+</div>
+ 
+{summary_banner}
+ 
+{section("Part A — General Information", part_a_rows)}
+{section("Part B — Gross Total Income", part_b_rows)}
+{section("Part C — Deductions (Chapter VI-A)", part_c_deduction_rows, keep=False)}
+{section("Part C — Total Income Summary", part_c_summary_rows)}
+{section("Part D — Tax Computation", part_d_rows)}
+{part_e_html}
+{schedule_it_html}
+{schedule_tds_html}
+{flags_html}
+ 
+</body>
+</html>"""
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # GENERATE PDF
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    try:
+        pdf_bytes = HTML(string=html_doc).write_pdf()
+    except Exception as e:
+        return {
+            "errors":            [f"pdf_generation: WeasyPrint rendering failed — {type(e).__name__}: {e}"],
+            "pipeline_complete": False,
+        }
+ 
+    # ── Optional: save to disk (development / testing) ────────────────────────
+    out_dir = os.getenv("PDF_OUTPUT_DIR")
+    if out_dir:
+        try:
+            stamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = Path(out_dir) / f"itr1_draft_{stamp}.pdf"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(pdf_bytes)
+            print(f"[pdf_generation] Saved draft PDF to {out_path}")
+        except Exception as e:
+            # Non-fatal — the PDF bytes are still returned.
+            print(f"[pdf_generation] Warning: could not save to disk — {e}")
+ 
+    return {
+        "pdf_bytes":         pdf_bytes,
+        "pipeline_complete": True,
+    }
 # ================================================================================
 # GRAPH COMPILATION
 # ================================================================================
