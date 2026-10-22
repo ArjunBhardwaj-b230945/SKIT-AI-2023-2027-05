@@ -8,3 +8,5 @@ python-dotenv
 email-validator
 pytest
 httpx
+SQLAlchemy
+psycopg[binary]
