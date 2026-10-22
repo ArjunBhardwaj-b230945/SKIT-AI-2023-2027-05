@@ -2,6 +2,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from sqlalchemy.orm import Session
 
 from controllers.auth import (
     JWT_ALGORITHM,
@@ -9,11 +10,12 @@ from controllers.auth import (
     find_user_by_id,
     serialize_user,
 )
+from database import get_db
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def authentication_error() -> HTTPException:
+def authentication_error():
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or missing authentication credentials",
@@ -21,7 +23,7 @@ def authentication_error() -> HTTPException:
     )
 
 
-def permission_error() -> HTTPException:
+def permission_error():
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="You do not have permission to perform this action",
@@ -35,19 +37,18 @@ def decode_access_token(token: str) -> dict:
             JWT_SECRET,
             algorithms=[JWT_ALGORITHM],
         )
-        subject = payload.get("sub")
 
-        if subject is None:
+        if not payload.get("sub"):
             raise authentication_error()
 
         return payload
-
     except JWTError:
         raise authentication_error()
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
 ) -> dict:
     if credentials is None:
         raise authentication_error()
@@ -56,25 +57,15 @@ def get_current_user(
 
     try:
         user_id = int(payload["sub"])
-    except (TypeError, ValueError):
+    except (KeyError, TypeError, ValueError):
         raise authentication_error()
 
-    user = find_user_by_id(user_id)
+    user = find_user_by_id(db, user_id)
 
-    # Also invalidates access after the user's account is deleted.
     if user is None:
         raise authentication_error()
 
     return serialize_user(user)
-
-
-def require_role(required_role: str):
-    def role_checker(current_user: dict = Depends(get_current_user)):
-        if current_user["role"] != required_role:
-            raise permission_error()
-        return current_user
-
-    return role_checker
 
 
 def get_current_admin(
@@ -82,6 +73,7 @@ def get_current_admin(
 ) -> dict:
     if current_user["role"] != "admin":
         raise permission_error()
+
     return current_user
 
 
