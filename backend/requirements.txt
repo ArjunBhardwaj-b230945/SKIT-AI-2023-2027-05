@@ -1,4 +1,3 @@
-
 fastapi
 uvicorn[standard]
 python-jose[cryptography]
@@ -10,3 +9,4 @@ pytest
 httpx
 SQLAlchemy
 psycopg[binary]
+alembic
