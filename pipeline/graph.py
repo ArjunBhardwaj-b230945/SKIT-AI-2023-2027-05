@@ -893,7 +893,7 @@ def cbdt_validation_node(state: "TaxSathiState") -> dict:
 
 def route_after_cbdt_validation(state: "TaxSathiState") -> str:
     """Conditional edge. Rename the targets to match your graph."""
-    return "show_errors" if state.get("cbdt_error_summary") else "generate_pdf"1
+    return "show_errors" if state.get("cbdt_error_summary") else "generate_pdf"
 
 def show_errors_node(state: TaxSathiState) -> TaxSathiState:
     """
