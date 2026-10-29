@@ -699,12 +699,6 @@
        ════════════════════════════════════════════════ -->
   <script type="module">
 /**
- * TaxSathi – AI Chat Interface (inline bundle)
- * auth.js + chat.js inlined so the page works when opened via file://.
- * This matches dashboard.html's inline-module pattern.
- */
-
-/**
  * TaxSathi – Authentication / Session Utility
  * --------------------------------------------
  * Centralises all JWT token storage so the rest of the
@@ -770,34 +764,40 @@ function signOut() {
   window.location.href = 'login.html';
 }
 
-// ── chat.js ──────────────────────────────────────────────────
-
 /**
  * TaxSathi – AI Chat Interface
  * -----------------------------
  * 20% Milestone: chatbot layout and reusable message components.
  * 40% Milestone: character counter, message timestamps, typing indicator.
+ * 60% Milestone (frontend scope): in-memory conversation history,
+ *   in-flight loading state, decoupled typing indicator, system/error
+ *   message utility. Real AI API integration deferred — endpoint and
+ *   request/response contract are not yet confirmed by the backend team.
  *
  * Responsibilities:
  *   - Auth guard: redirect to login if no JWT is stored.
  *   - Populate nav user badge from JWT (same pattern as dashboard).
  *   - Sign-out handler.
- *   - Message submission: validate, render user bubble, clear input.
+ *   - Message submission: validate, record history, render bubble, reset input.
+ *   - In-memory conversationHistory (role/content pairs) — no persistence.
+ *   - In-flight guard: disable Send + input while an operation is active.
+ *   - Typing indicator: show on submit, hide explicitly (not on a timer).
+ *   - System/error message display utility (plain text, no HTML injection).
  *   - Disable Send when input is empty/whitespace or over char limit.
  *   - Auto-resize textarea.
  *   - Scroll conversation to latest message.
  *   - Hide "empty hint" after first user message.
- *   - Character counter with warning/limit states (40%).
- *   - Typing indicator shown briefly after each user message (40%).
- *   - Timestamp on each user message bubble (40%).
+ *   - Character counter with warning/limit states.
  *
- * NOT implemented (future milestones):
- *   - Real AI response generation or API calls.
- *   - Conversation persistence / history.
+ * DEFERRED — requires confirmed backend contract (Apoorv):
+ *   - Real AI Assistant API request (POST to undisclosed endpoint).
+ *   - Exact request-body field names and conversation-context schema.
+ *   - Response JSON parsing and assistant-reply display.
+ *   - Mapping of HTTP status codes (401/403/422/500/503) to verified responses.
+ *   - Streaming response handling.
  */
 
 'use strict';
-
 
 // ══ Auth guard ═══════════════════════════════════════════════════
 // Must run before anything else.  Mirrors dashboard.html behaviour.
@@ -813,21 +813,22 @@ const MAX_CHARS = 500;
 const WARN_THRESHOLD = 450;
 
 /**
- * Duration (ms) to show the typing indicator after a user message.
- * Structural only at this milestone — no real AI response is generated.
+ * Safety-net timeout (ms) — forces the typing indicator to hide if
+ * hideTypingIndicator() is never called (e.g. an uncaught error in a future
+ * API handler).  Does NOT simulate an AI response delay.
  */
-const TYPING_DISPLAY_MS = 1800;
+const TYPING_SAFETY_TIMEOUT_MS = 30000;
 
 // ══ DOM references ═══════════════════════════════════════════════
-const emailEl       = document.getElementById('chatUserEmail');
-const signOutBtn    = document.getElementById('chatSignOutBtn');
-const conversation  = document.getElementById('chatConversation');
-const chatInput     = document.getElementById('chatInput');
-const sendBtn       = document.getElementById('chatSendBtn');
-const emptyHint     = document.getElementById('chatEmptyHint');
-const charCount     = document.getElementById('chatCharCount');
-const charAnnounce  = document.getElementById('chatCharAnnounce');
-const typingEl      = document.getElementById('chatTypingIndicator');
+const emailEl      = document.getElementById('chatUserEmail');
+const signOutBtn   = document.getElementById('chatSignOutBtn');
+const conversation = document.getElementById('chatConversation');
+const chatInput    = document.getElementById('chatInput');
+const sendBtn      = document.getElementById('chatSendBtn');
+const emptyHint    = document.getElementById('chatEmptyHint');
+const charCount    = document.getElementById('chatCharCount');
+const charAnnounce = document.getElementById('chatCharAnnounce');
+const typingEl     = document.getElementById('chatTypingIndicator');
 
 // ══ Populate nav badge from JWT ══════════════════════════════════
 const token = getToken();
@@ -853,16 +854,84 @@ if (token) {
 // ══ Sign-out handler ═════════════════════════════════════════════
 if (signOutBtn) {
   signOutBtn.addEventListener('click', () => {
-    signOutBtn.disabled   = true;
+    signOutBtn.disabled    = true;
     signOutBtn.textContent = 'Signing out…';
     signOut(); // clears token and redirects to login.html
   });
 }
 
+// ══ In-memory conversation history ═══════════════════════════════
+/**
+ * Ordered record of the conversation.  Each entry is a plain object:
+ *   { role: 'user' | 'assistant', content: string }
+ *
+ * Field names are intentionally generic and independent of the backend
+ * contract (Apoorv's exact request schema is still pending).  When the
+ * API contract is confirmed the 60% integration step will map or rename
+ * these fields as required.
+ *
+ * Not persisted — cleared on page reload.
+ */
+const conversationHistory = [];
+
+/**
+ * Records a message in the in-memory history.
+ *
+ * @param {'user'|'assistant'} role
+ * @param {string}             content  Plain text content of the message.
+ */
+function addToHistory(role, content) {
+  conversationHistory.push({ role, content });
+}
+
+/**
+ * Returns a shallow copy of the conversation history.
+ * Intended for use by the future API integration layer — the caller
+ * receives a snapshot and cannot mutate the internal array.
+ *
+ * @returns {{ role: string, content: string }[]}
+ */
+function getHistory() {
+  return conversationHistory.slice();
+}
+
+// ══ In-flight loading state ═══════════════════════════════════════
+/**
+ * True while a submission is being processed.
+ * Prevents duplicate sends before an API response (or error) is received.
+ */
+let isBusy = false;
+
+/** Handle for the typing-indicator safety-net timeout. */
+let _typingSafetyHandle = null;
+
+/**
+ * Locks or unlocks the composer UI.
+ *
+ * @param {boolean} loading  true = lock (disable Send + input), false = unlock.
+ */
+function setLoadingState(loading) {
+  isBusy = loading;
+
+  // Disable/enable the textarea
+  chatInput.disabled = loading;
+
+  if (loading) {
+    // Disable Send unconditionally while busy
+    sendBtn.disabled = true;
+    sendBtn.setAttribute('aria-disabled', 'true');
+  } else {
+    // Re-evaluate Send state based on current input content
+    updateSendButtonState();
+    // Restore focus so the user can continue typing immediately
+    chatInput.focus();
+  }
+}
+
 // ══ formatTime ═══════════════════════════════════════════════════
 /**
  * Returns the current time as a short human-readable string, e.g. "2:34 PM".
- * Used to stamp each outgoing user message.
+ * Used to stamp outgoing user messages.
  *
  * @returns {string}
  */
@@ -877,45 +946,45 @@ function formatTime() {
 /**
  * Reusable message component factory.
  *
- * @param {'user'|'assistant'} role  - Who sent the message.
- * @param {string}             text  - The message content (plain text, not HTML).
- * @returns {HTMLElement}            - A fully constructed .chat-message element.
+ * @param {'user'|'assistant'|'system'} role  Who sent the message.
+ * @param {string}                      text  Plain text content (never HTML).
+ * @returns {HTMLElement}
  *
- * Structure produced (40% adds .chat-message-time):
- *   <div class="chat-message chat-message--{role}" role="article" aria-label="{role} message">
+ * Produced structure:
+ *   <div class="chat-message chat-message--{role}" role="article" aria-label="…">
  *     <span class="chat-message-meta" aria-hidden="true">{label}</span>
  *     <div class="chat-message-bubble">{text}</div>
  *     <span class="chat-message-time" aria-hidden="true">{time}</span>  <!-- user only -->
  *   </div>
  */
 function createMessageElement(role, text) {
-  const isUser  = role === 'user';
-  const label   = isUser ? 'You' : 'TaxSathi AI';
+  const isUser = role === 'user';
+  const label  = isUser ? 'You' : 'TaxSathi AI';
 
   const wrapper = document.createElement('div');
-  wrapper.className   = `chat-message chat-message--${role}`;
+  wrapper.className = `chat-message chat-message--${role}`;
   wrapper.setAttribute('role', 'article');
   wrapper.setAttribute('aria-label', `${isUser ? 'Your' : 'Assistant'} message`);
 
-  const meta   = document.createElement('span');
-  meta.className      = 'chat-message-meta';
+  const meta = document.createElement('span');
+  meta.className = 'chat-message-meta';
   meta.setAttribute('aria-hidden', 'true');
-  meta.textContent    = label;
+  meta.textContent = label;
 
   const bubble = document.createElement('div');
-  bubble.className    = 'chat-message-bubble';
-  // Use textContent (not innerHTML) to prevent XSS
-  bubble.textContent  = text;
+  bubble.className = 'chat-message-bubble';
+  // textContent — never innerHTML — prevents XSS from message content
+  bubble.textContent = text;
 
   wrapper.appendChild(meta);
   wrapper.appendChild(bubble);
 
-  // 40%: Add timestamp below each user message bubble
+  // Timestamp shown below user bubbles only
   if (isUser) {
     const timeEl = document.createElement('span');
-    timeEl.className        = 'chat-message-time';
+    timeEl.className = 'chat-message-time';
     timeEl.setAttribute('aria-hidden', 'true');
-    timeEl.textContent      = formatTime();
+    timeEl.textContent = formatTime();
     wrapper.appendChild(timeEl);
   }
 
@@ -924,11 +993,12 @@ function createMessageElement(role, text) {
 
 // ══ appendMessage ════════════════════════════════════════════════
 /**
- * Appends a new message to the conversation area and scrolls to it.
+ * Renders a message bubble in the conversation area and scrolls to it.
  * Hides the empty-state hint on the first user submission.
+ * Does NOT update conversationHistory — callers manage history themselves.
  *
- * @param {'user'|'assistant'} role
- * @param {string}             text
+ * @param {'user'|'assistant'|'system'} role
+ * @param {string}                      text  Plain text.
  */
 function appendMessage(role, text) {
   // Hide the "type below" hint once any message is submitted
@@ -945,64 +1015,104 @@ function appendMessage(role, text) {
     conversation.appendChild(el);
   }
 
-  // Scroll conversation to show the new message.
-  // Use 'instant' behavior so the scroll completes synchronously within the
-  // same paint cycle as the DOM update — reliably detectable and avoids
-  // CSS smooth-scroll animation competing with programmatic scroll.
   requestAnimationFrame(() => {
     conversation.scrollTo({ top: conversation.scrollHeight, behavior: 'instant' });
   });
+}
+
+// ══ showSystemMessage ════════════════════════════════════════════
+/**
+ * Displays a plain-text status or error message in the conversation as an
+ * assistant-style bubble.  Intended for frontend-generated notices (e.g.
+ * "Unable to reach the server.") — NOT for forwarding raw backend error JSON.
+ *
+ * Safe: uses textContent, never innerHTML.
+ * Does NOT add to conversationHistory (system notices are not conversation
+ * turns and should not be sent as context to the AI).
+ *
+ * @param {string} text  A short, human-readable plain-text message.
+ */
+function showSystemMessage(text) {
+  appendMessage('assistant', text);
 }
 
 // ══ showTypingIndicator / hideTypingIndicator ═════════════════════
 /**
- * Shows the animated typing indicator for TYPING_DISPLAY_MS milliseconds,
- * then hides it automatically.
+ * Shows the animated typing indicator.
  *
- * Structural only at this milestone — no real AI response is sent.
+ * The indicator now stays visible until hideTypingIndicator() is called
+ * explicitly (e.g. from a fetch .finally() block once the API is integrated).
+ * A 30-second safety-net timeout prevents it from getting permanently stuck
+ * if an uncaught error skips the explicit hide call.
+ *
+ * No artificial delay or fake response is generated here.
  */
 function showTypingIndicator() {
   if (!typingEl) return;
+
   typingEl.classList.add('is-visible');
   typingEl.setAttribute('aria-hidden', 'false');
-  // Ensure indicator is visible (scroll)
+
   requestAnimationFrame(() => {
     conversation.scrollTo({ top: conversation.scrollHeight, behavior: 'instant' });
   });
-  setTimeout(hideTypingIndicator, TYPING_DISPLAY_MS);
+
+  // Safety net: force-hide after TYPING_SAFETY_TIMEOUT_MS if still visible.
+  // Cleared by hideTypingIndicator() on the normal code path.
+  if (_typingSafetyHandle !== null) {
+    clearTimeout(_typingSafetyHandle);
+  }
+  _typingSafetyHandle = setTimeout(() => {
+    hideTypingIndicator();
+    // If a future API call is still in-flight at this point, also unlock the UI
+    // so the user is not permanently blocked.
+    if (isBusy) setLoadingState(false);
+  }, TYPING_SAFETY_TIMEOUT_MS);
 }
 
+/**
+ * Hides the typing indicator and clears the safety-net timeout.
+ * Call this from a fetch .finally() block once API integration is added.
+ */
 function hideTypingIndicator() {
   if (!typingEl) return;
+
   typingEl.classList.remove('is-visible');
   typingEl.setAttribute('aria-hidden', 'true');
+
+  if (_typingSafetyHandle !== null) {
+    clearTimeout(_typingSafetyHandle);
+    _typingSafetyHandle = null;
+  }
 }
 
 // ══ updateSendButtonState ════════════════════════════════════════
 /**
  * Enable or disable the Send button based on whether the textarea
  * contains non-whitespace text AND is within the character limit.
+ * Has no effect while isBusy is true (loading state takes precedence).
  */
 function updateSendButtonState() {
+  if (isBusy) return; // loading state controls Send during an operation
+
   const len        = chatInput.value.length;
   const hasContent = chatInput.value.trim().length > 0;
   const atLimit    = len >= MAX_CHARS;
 
   const shouldEnable = hasContent && !atLimit;
-  sendBtn.disabled          = !shouldEnable;
+  sendBtn.disabled   = !shouldEnable;
   sendBtn.setAttribute('aria-disabled', String(!shouldEnable));
 }
 
 // ══ updateCharCounter ════════════════════════════════════════════
 /**
  * Updates the character counter display and applies visual state classes.
- * Announces the limit to screen readers when reached.
+ * Announces the character limit to screen readers when reached.
  */
 function updateCharCounter() {
   if (!charCount) return;
 
-  const len       = chatInput.value.length;
-  const remaining = MAX_CHARS - len;
+  const len = chatInput.value.length;
 
   // Show counter only after the user starts typing
   if (len > 0) {
@@ -1013,26 +1123,19 @@ function updateCharCounter() {
 
   charCount.textContent = `${len} / ${MAX_CHARS}`;
 
-  // Remove all state classes first
   charCount.classList.remove('is-warning', 'is-limit');
   chatInput.classList.remove('is-at-limit');
 
   if (len >= MAX_CHARS) {
-    // At limit
     charCount.classList.add('is-limit');
     chatInput.classList.add('is-at-limit');
-    // Screen reader announcement (throttled to avoid repeat spam)
     if (charAnnounce && charAnnounce.textContent !== 'Character limit reached.') {
       charAnnounce.textContent = 'Character limit reached.';
     }
   } else if (len >= WARN_THRESHOLD) {
-    // Warning zone
     charCount.classList.add('is-warning');
-    chatInput.classList.remove('is-at-limit');
-    // Clear previous limit announcement
     if (charAnnounce) charAnnounce.textContent = '';
   } else {
-    // Normal
     if (charAnnounce) charAnnounce.textContent = '';
   }
 }
@@ -1042,39 +1145,98 @@ function updateCharCounter() {
  * Adjusts textarea height to fit its content, up to the CSS max-height.
  */
 function autoResizeTextarea() {
-  chatInput.style.height = 'auto';       // reset to measure scroll height
+  chatInput.style.height = 'auto';
   chatInput.style.height = chatInput.scrollHeight + 'px';
 }
 
 // ══ handleSubmit ═════════════════════════════════════════════════
 /**
- * Validates the current input, adds the user message to the
- * conversation, and resets the composer.
- * Shows the typing indicator briefly (structural, no real AI response).
+ * Validates the current input, records the message in conversationHistory,
+ * renders the user bubble, locks the UI, and shows the typing indicator.
+ *
+ * Real API integration is deferred.  When the endpoint and JSON contract are
+ * confirmed, replace the comment block below with a fetch() call that:
+ *   1. POSTs to the confirmed endpoint with the JWT header and request body.
+ *   2. Calls appendMessage('assistant', responseText) + addToHistory('assistant', responseText).
+ *   3. Calls hideTypingIndicator() and setLoadingState(false) in .finally().
+ *   4. Calls showSystemMessage(…) in .catch() with a plain-text error notice.
+ *
+ * NOTE: getHistory() returns a snapshot of conversationHistory for use as
+ * context in the request body once field names are confirmed.
  */
 function handleSubmit() {
+  // Guard: do not allow a second submission while one is in progress
+  if (isBusy) return;
+
   const text = chatInput.value.trim();
 
-  // Guard: prevent empty or whitespace-only submission
+  // Guard: reject empty / whitespace-only input
   if (!text) return;
 
-  // Guard: prevent submission if at or over character limit
+  // Guard: reject input at or over the character limit
   if (chatInput.value.length >= MAX_CHARS) return;
 
-  // Render the user message
+  // ── Record in history ─────────────────────────────────────────
+  addToHistory('user', text);
+
+  // ── Render the user bubble ────────────────────────────────────
   appendMessage('user', text);
 
-  // Show typing indicator (structural — no real AI response)
+  // ── Lock UI and show typing indicator ─────────────────────────
+  setLoadingState(true);
   showTypingIndicator();
 
-  // Clear and reset the input
-  chatInput.value    = '';
+  // ── Reset the composer ────────────────────────────────────────
+  chatInput.value = '';
   autoResizeTextarea();
-  updateSendButtonState();
   updateCharCounter();
+  // Note: setLoadingState(true) already disabled Send; no need to call
+  // updateSendButtonState() here — it will be called by setLoadingState(false).
 
-  // Return focus to input so the user can type the next message
-  chatInput.focus();
+  // ── API integration point (deferred) ─────────────────────────
+  //
+  // REPLACE THIS BLOCK when Apoorv's endpoint and JSON contract are ready:
+  //
+  //   const history = getHistory();  // snapshot for request context
+  //
+  //   fetch('<confirmed_endpoint>', {
+  //     method: 'POST',
+  //     headers: {
+  //       'Content-Type': 'application/json',
+  //       'Authorization': `Bearer ${getToken()}`,
+  //     },
+  //     body: JSON.stringify({
+  //       /* field names TBD — use confirmed schema from Apoorv */
+  //     }),
+  //   })
+  //   .then((res) => {
+  //     if (!res.ok) {
+  //       // Map confirmed status codes here
+  //       throw new Error(`HTTP ${res.status}`);
+  //     }
+  //     return res.json();
+  //   })
+  //   .then((data) => {
+  //     const reply = data.<confirmed_reply_field>;
+  //     addToHistory('assistant', reply);
+  //     appendMessage('assistant', reply);
+  //   })
+  //   .catch(() => {
+  //     showSystemMessage('Unable to get a response. Please try again.');
+  //   })
+  //   .finally(() => {
+  //     hideTypingIndicator();
+  //     setLoadingState(false);
+  //   });
+  //
+  // Until then, do nothing further — no fake response, no artificial delay.
+  // The typing indicator will auto-hide after TYPING_SAFETY_TIMEOUT_MS (30 s)
+  // and the UI will be unlocked by the safety-net timeout in showTypingIndicator().
+  //
+  // For local development/demo before the backend is ready, the developer may
+  // call the following two lines manually in the browser console to reset:
+  //   hideTypingIndicator();
+  //   setLoadingState(false);
 }
 
 // ══ Event listeners ══════════════════════════════════════════════
@@ -1094,18 +1256,17 @@ sendBtn.addEventListener('click', handleSubmit);
 chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault(); // prevent textarea from inserting newline
-    if (!sendBtn.disabled) {
+    if (!sendBtn.disabled && !isBusy) {
       handleSubmit();
     }
   }
 });
 
 // ══ Initial state ════════════════════════════════════════════════
-// Ensure button is disabled on page load (input is empty)
 updateSendButtonState();
-// Counter starts hidden (no text yet)
 updateCharCounter();
-</script>
+
+  </script>
 
 </body>
 </html>
