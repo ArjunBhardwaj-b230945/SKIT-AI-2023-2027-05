@@ -730,68 +730,170 @@ def itr_field_mapper_node(state: TaxSathiState) -> TaxSathiState:
         return {"errors": [f"itr_field_mapper_node crashed: {str(e)}"]}
 
 
-def cbdt_validation_node(state: TaxSathiState) -> TaxSathiState:
-    """
-    Validates the filled ITR-1 draft against CBDT Category A rules.
+"""
+CBDT ITR-1 validation (AY 2025-26, rules V1.1, 279 rules).
 
-    Source: CBDT e-Filing ITR-1 Validation Rules AY 2025-26 V1.1 (279 rules).
-    Category A violations block PDF generation.
+Design:
+  * Each CBDT rule is one small function registered with @rule(...).
+  * run_rules() executes every registered rule and returns ValidationFlags.
+  * cbdt_validation_node() is the LangGraph node: idempotent, fails closed,
+    and returns a state update instead of mutating shared objects.
 
-    Currently implements:
-      Rule 17  — Chapter VI-A deductions ≤ GTI
-      Rule 24  — Total Income = GTI - Deductions (arithmetic check)
-      Rule 117 — Total income ≤ ₹50,00,000 (ITR-1 ceiling)
+Adding a rule = writing one function. Sprint 3 (279 rules) needs no
+changes to the node or the runner.
+"""
+from __future__ import annotations
 
-    Sprint 3 (12 Oct – 15 Nov 2026): implement all 279 rules.
-    See TAXSATHI_PROJECT.md Section 9.2 for the full list.
-    """
+import logging
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, Optional
+
+# Adjust to your project layout:
+# from taxsathi.state import TaxSathiState
+# from taxsathi.models import ValidationFlag, FlagSeverity
+
+log = logging.getLogger(__name__)
+
+STAGE = "itr_validation"
+
+# Rule 24 tolerance in rupees. Check the CBDT PDF: if total income is rounded
+# (s.288A, nearest ₹10), widen this to match the rounding the portal applies.
+TOTAL_INCOME_TOLERANCE = 1
+
+ITR1_INCOME_CEILING = 5_000_000  # ₹50,00,000
+
+
+class Category(str, Enum):
+    A = "A"  # blocks PDF generation
+    B = "B"  # warning only
+
+
+@dataclass(frozen=True)
+class Rule:
+    rule_id: int
+    field: str
+    description: str
+    category: Category
+    check: Callable[[object], Optional[str]]  # returns message if violated, else None
+
+
+RULES: list[Rule] = []
+
+
+def rule(rule_id: int, field: str, description: str, category: Category = Category.A):
+    """Register a CBDT rule. The function returns an error message or None."""
+    def decorator(fn: Callable[[object], Optional[str]]):
+        if any(r.rule_id == rule_id for r in RULES):
+            raise ValueError(f"Duplicate CBDT rule id: {rule_id}")
+        RULES.append(Rule(rule_id, field, description, category, fn))
+        return fn
+    return decorator
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+def _inr(x) -> str:
+    return f"₹{x:,.0f}"
+
+
+def _all_present(*values) -> bool:
+    return all(v is not None for v in values)
+
+
+# --------------------------------------------------------------------------- #
+# rules  (Sprint 3: add the remaining rules below, one function each)
+# --------------------------------------------------------------------------- #
+@rule(17, "part_c.total_deductions_C1", "Chapter VI-A deductions must not exceed GTI")
+def rule_17(draft) -> Optional[str]:
+    b4 = draft.part_b.gross_total_income_B4
+    c1 = draft.part_c.total_deductions_C1
+    if _all_present(b4, c1) and c1 > b4:
+        return f"Deductions ({_inr(c1)}) exceed GTI ({_inr(b4)})."
+    return None
+
+
+@rule(24, "part_c.total_income_C2", "Total income must equal max(0, GTI − deductions)")
+def rule_24(draft) -> Optional[str]:
+    b4 = draft.part_b.gross_total_income_B4
+    c1 = draft.part_c.total_deductions_C1
+    c2 = draft.part_c.total_income_C2
+    if _all_present(b4, c1, c2):
+        expected = max(0, b4 - c1)
+        if abs(c2 - expected) > TOTAL_INCOME_TOLERANCE:
+            return f"Total income ({_inr(c2)}) ≠ GTI − Deductions ({_inr(expected)})."
+    return None
+
+
+@rule(117, "part_c.total_income_C2", "ITR-1 is not allowed above ₹50,00,000 total income")
+def rule_117(draft) -> Optional[str]:
+    c2 = draft.part_c.total_income_C2
+    if c2 is not None and c2 > ITR1_INCOME_CEILING:
+        return f"Income ({_inr(c2)}) exceeds the ITR-1 ceiling of ₹50,00,000. Use ITR-2."
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# runner
+# --------------------------------------------------------------------------- #
+def run_rules(draft) -> list:
+    """Run every registered rule against the draft and return ValidationFlags."""
+    flags = []
+    for r in sorted(RULES, key=lambda r: r.rule_id):
+        severity = FlagSeverity.ERROR if r.category is Category.A else FlagSeverity.WARNING
+        try:
+            message = r.check(draft)
+        except Exception:
+            # Fail closed: a rule we could not evaluate must not silently pass.
+            log.exception("CBDT rule %s crashed", r.rule_id)
+            message = "Could not be evaluated. Please review this field manually."
+            severity = FlagSeverity.ERROR
+        if message:
+            flags.append(ValidationFlag(
+                stage=STAGE,
+                field=r.field,
+                issue=f"Rule {r.rule_id}: {message}",
+                severity=severity,
+            ))
+    return flags
+
+
+def build_error_summary(flags: list) -> Optional[str]:
+    """Human-readable summary of blocking (Category A) errors, or None."""
+    blocking = [f for f in flags if f.stage == STAGE and f.severity == FlagSeverity.ERROR]
+    if not blocking:
+        return None
+    lines = "\n".join(f"  • {f.issue}" for f in blocking)
+    return f"The following issues must be fixed before generating your ITR-1:\n{lines}"
+
+
+# --------------------------------------------------------------------------- #
+# LangGraph node + router
+# --------------------------------------------------------------------------- #
+def cbdt_validation_node(state: "TaxSathiState") -> dict:
+    """Validate the ITR-1 draft against CBDT rules. Category A errors block PDF generation."""
     draft = state.get("draft_itr1")
     if draft is None:
         return {"errors": ["cbdt_validation: draft_itr1 is None."]}
 
-    new_flags = []
+    # Idempotent: drop flags from a previous validation pass before re-running,
+    # so loops (user fixes -> re-validate) don't pile up duplicates.
+    kept = [f for f in draft.flags if f.stage != STAGE]
+    all_flags = kept + run_rules(draft)
 
-    b4 = draft.part_b.gross_total_income_B4
-    c1 = draft.part_c.total_deductions_C1
-    c2 = draft.part_c.total_income_C2
+    # Assumes a pydantic v2 model. For a dataclass use dataclasses.replace(...).
+    new_draft = draft.model_copy(update={"flags": all_flags})
 
-    # Rule 17: Chapter VI-A deductions ≤ GTI
-    if c1 is not None and b4 is not None and c1 > b4:
-        new_flags.append(ValidationFlag(
-            stage="itr_validation", field="part_c.total_deductions_C1",
-            issue=f"Rule 17: Deductions (₹{c1:,.0f}) exceed GTI (₹{b4:,.0f}).",
-            severity=FlagSeverity.ERROR,
-        ))
+    return {
+        "draft_itr1": new_draft,
+        "cbdt_error_summary": build_error_summary(all_flags),
+    }
 
-    # Rule 24: Total Income = max(0, GTI - Deductions)
-    if b4 is not None and c1 is not None and c2 is not None:
-        expected = max(0, b4 - c1)
-        if abs(c2 - expected) > 1:
-            new_flags.append(ValidationFlag(
-                stage="itr_validation", field="part_c.total_income_C2",
-                issue=f"Rule 24: Total income (₹{c2:,.0f}) ≠ GTI − Deductions (₹{expected:,.0f}).",
-                severity=FlagSeverity.ERROR,
-            ))
 
-    # Rule 117: ITR-1 income ceiling ₹50L
-    if c2 is not None and c2 > 5_000_000:
-        new_flags.append(ValidationFlag(
-            stage="itr_validation", field="part_c.total_income_C2",
-            issue=f"Rule 117: Income (₹{c2:,.0f}) exceeds ITR-1 ceiling of ₹50,00,000. Use ITR-2.",
-            severity=FlagSeverity.ERROR,
-        ))
-
-    draft.flags.extend(new_flags)
-
-    # Build a human-readable summary of Category A errors for show_errors_node
-    cat_a = [f for f in draft.flags if f.severity == FlagSeverity.ERROR and f.stage == "itr_validation"]
-    summary = None
-    if cat_a:
-        summary = "The following issues must be fixed before generating your ITR-1:\n" + \
-                  "\n".join(f"  • {f.issue}" for f in cat_a)
-
-    return {"draft_itr1": draft, "cbdt_error_summary": summary}
-
+def route_after_cbdt_validation(state: "TaxSathiState") -> str:
+    """Conditional edge. Rename the targets to match your graph."""
+    return "show_errors" if state.get("cbdt_error_summary") else "generate_pdf"1
 
 def show_errors_node(state: TaxSathiState) -> TaxSathiState:
     """
