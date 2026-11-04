@@ -7,6 +7,9 @@
  *   in-flight loading state, decoupled typing indicator, system/error
  *   message utility. Real AI API integration deferred — endpoint and
  *   request/response contract are not yet confirmed by the backend team.
+ * 80% Milestone: conversation flow improvements — UI does not lock when no
+ *   API request is dispatched; system messages rendered with distinct styling;
+ *   assistant response display prepared and ready for API integration.
  *
  * Responsibilities:
  *   - Auth guard: redirect to login if no JWT is stored.
@@ -15,8 +18,12 @@
  *   - Message submission: validate, record history, render bubble, reset input.
  *   - In-memory conversationHistory (role/content pairs) — no persistence.
  *   - In-flight guard: disable Send + input while an operation is active.
- *   - Typing indicator: show on submit, hide explicitly (not on a timer).
- *   - System/error message display utility (plain text, no HTML injection).
+ *   - Typing indicator: shown while API call is in-flight; not shown when no
+ *       request is dispatched (backend not yet connected).
+ *   - displayAssistantReply(text): renders an assistant bubble and records
+ *       history — ready to be called from the future fetch() handler.
+ *   - System/error message display utility (plain text, no HTML injection,
+ *       distinct visual role from assistant replies).
  *   - Disable Send when input is empty/whitespace or over char limit.
  *   - Auto-resize textarea.
  *   - Scroll conversation to latest message.
@@ -26,8 +33,8 @@
  * DEFERRED — requires confirmed backend contract (Apoorv):
  *   - Real AI Assistant API request (POST to undisclosed endpoint).
  *   - Exact request-body field names and conversation-context schema.
- *   - Response JSON parsing and assistant-reply display.
- *   - Mapping of HTTP status codes (401/403/422/500/503) to verified responses.
+ *   - Response JSON parsing (call displayAssistantReply(text) with result).
+ *   - Mapping of HTTP status codes (401/403/422/500/503) to user messages.
  *   - Streaming response handling.
  */
 
@@ -194,25 +201,32 @@ function formatTime() {
  *   </div>
  */
 function createMessageElement(role, text) {
-  const isUser = role === 'user';
-  const label  = isUser ? 'You' : 'TaxSathi AI';
+  const isUser      = role === 'user';
+  const isSystem    = role === 'system';
+  const label       = isUser ? 'You' : 'TaxSathi AI';
 
   const wrapper = document.createElement('div');
   wrapper.className = `chat-message chat-message--${role}`;
   wrapper.setAttribute('role', 'article');
-  wrapper.setAttribute('aria-label', `${isUser ? 'Your' : 'Assistant'} message`);
+  wrapper.setAttribute(
+    'aria-label',
+    isUser ? 'Your message' : isSystem ? 'System notice' : 'Assistant message'
+  );
 
-  const meta = document.createElement('span');
-  meta.className = 'chat-message-meta';
-  meta.setAttribute('aria-hidden', 'true');
-  meta.textContent = label;
+  // Meta label — not shown for system notices (they use minimal styling)
+  if (!isSystem) {
+    const meta = document.createElement('span');
+    meta.className = 'chat-message-meta';
+    meta.setAttribute('aria-hidden', 'true');
+    meta.textContent = label;
+    wrapper.appendChild(meta);
+  }
 
   const bubble = document.createElement('div');
   bubble.className = 'chat-message-bubble';
   // textContent — never innerHTML — prevents XSS from message content
   bubble.textContent = text;
 
-  wrapper.appendChild(meta);
   wrapper.appendChild(bubble);
 
   // Timestamp shown below user bubbles only
@@ -258,17 +272,37 @@ function appendMessage(role, text) {
 
 // ══ showSystemMessage ════════════════════════════════════════════
 /**
- * Displays a plain-text status or error message in the conversation as an
- * assistant-style bubble.  Intended for frontend-generated notices (e.g.
- * "Unable to reach the server.") — NOT for forwarding raw backend error JSON.
+ * Displays a plain-text status or error notice in the conversation.
+ * Uses the 'system' role so it renders with distinct styling and is NOT
+ * confused with a real AI reply.
  *
  * Safe: uses textContent, never innerHTML.
- * Does NOT add to conversationHistory (system notices are not conversation
- * turns and should not be sent as context to the AI).
+ * Does NOT add to conversationHistory — system notices are not conversation
+ * turns and must NOT be sent as context to the AI.
  *
  * @param {string} text  A short, human-readable plain-text message.
  */
 function showSystemMessage(text) {
+  appendMessage('system', text);
+}
+
+// ══ displayAssistantReply ═════════════════════════════════════════
+/**
+ * Renders an assistant reply bubble and records it in conversationHistory.
+ *
+ * This function is the single integration point for the future API fetch()
+ * handler.  Call it with the plain-text reply extracted from the response
+ * JSON once the backend contract is confirmed.
+ *
+ * Example usage inside the fetch .then() block:
+ *   displayAssistantReply(data.<confirmed_reply_field>);
+ *
+ * Safe: delegates to appendMessage() which uses textContent, not innerHTML.
+ *
+ * @param {string} text  Plain-text assistant reply (never raw HTML).
+ */
+function displayAssistantReply(text) {
+  addToHistory('assistant', text);
   appendMessage('assistant', text);
 }
 
@@ -388,17 +422,43 @@ function autoResizeTextarea() {
 // ══ handleSubmit ═════════════════════════════════════════════════
 /**
  * Validates the current input, records the message in conversationHistory,
- * renders the user bubble, locks the UI, and shows the typing indicator.
+ * renders the user bubble, resets the composer, and dispatches the API call.
  *
- * Real API integration is deferred.  When the endpoint and JSON contract are
- * confirmed, replace the comment block below with a fetch() call that:
- *   1. POSTs to the confirmed endpoint with the JWT header and request body.
- *   2. Calls appendMessage('assistant', responseText) + addToHistory('assistant', responseText).
- *   3. Calls hideTypingIndicator() and setLoadingState(false) in .finally().
- *   4. Calls showSystemMessage(…) in .catch() with a plain-text error notice.
+ * API integration is deferred.  When the endpoint and JSON contract are
+ * confirmed, add a fetch() call after the composer reset following this pattern:
+ *
+ *   setLoadingState(true);
+ *   showTypingIndicator();
+ *
+ *   const history = getHistory();  // snapshot for request context
+ *   fetch('<confirmed_endpoint>', {
+ *     method: 'POST',
+ *     headers: {
+ *       'Content-Type': 'application/json',
+ *       'Authorization': `Bearer ${getToken()}`,
+ *     },
+ *     body: JSON.stringify({
+ *       // field names TBD — use confirmed schema from Apoorv
+ *     }),
+ *   })
+ *   .then((res) => {
+ *     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+ *     return res.json();
+ *   })
+ *   .then((data) => {
+ *     displayAssistantReply(data.<confirmed_reply_field>);
+ *   })
+ *   .catch(() => {
+ *     showSystemMessage('Unable to get a response. Please try again.');
+ *   })
+ *   .finally(() => {
+ *     hideTypingIndicator();
+ *     setLoadingState(false);
+ *   });
  *
  * NOTE: getHistory() returns a snapshot of conversationHistory for use as
  * context in the request body once field names are confirmed.
+ * NOTE: displayAssistantReply() records the reply in history and renders it.
  */
 function handleSubmit() {
   // Guard: do not allow a second submission while one is in progress
@@ -418,61 +478,16 @@ function handleSubmit() {
   // ── Render the user bubble ────────────────────────────────────
   appendMessage('user', text);
 
-  // ── Lock UI and show typing indicator ─────────────────────────
-  setLoadingState(true);
-  showTypingIndicator();
-
   // ── Reset the composer ────────────────────────────────────────
   chatInput.value = '';
   autoResizeTextarea();
   updateCharCounter();
-  // Note: setLoadingState(true) already disabled Send; no need to call
-  // updateSendButtonState() here — it will be called by setLoadingState(false).
+  updateSendButtonState();
 
-  // ── API integration point (deferred) ─────────────────────────
-  //
-  // REPLACE THIS BLOCK when Apoorv's endpoint and JSON contract are ready:
-  //
-  //   const history = getHistory();  // snapshot for request context
-  //
-  //   fetch('<confirmed_endpoint>', {
-  //     method: 'POST',
-  //     headers: {
-  //       'Content-Type': 'application/json',
-  //       'Authorization': `Bearer ${getToken()}`,
-  //     },
-  //     body: JSON.stringify({
-  //       /* field names TBD — use confirmed schema from Apoorv */
-  //     }),
-  //   })
-  //   .then((res) => {
-  //     if (!res.ok) {
-  //       // Map confirmed status codes here
-  //       throw new Error(`HTTP ${res.status}`);
-  //     }
-  //     return res.json();
-  //   })
-  //   .then((data) => {
-  //     const reply = data.<confirmed_reply_field>;
-  //     addToHistory('assistant', reply);
-  //     appendMessage('assistant', reply);
-  //   })
-  //   .catch(() => {
-  //     showSystemMessage('Unable to get a response. Please try again.');
-  //   })
-  //   .finally(() => {
-  //     hideTypingIndicator();
-  //     setLoadingState(false);
-  //   });
-  //
-  // Until then, do nothing further — no fake response, no artificial delay.
-  // The typing indicator will auto-hide after TYPING_SAFETY_TIMEOUT_MS (30 s)
-  // and the UI will be unlocked by the safety-net timeout in showTypingIndicator().
-  //
-  // For local development/demo before the backend is ready, the developer may
-  // call the following two lines manually in the browser console to reset:
-  //   hideTypingIndicator();
-  //   setLoadingState(false);
+  // ── API INTEGRATION POINT (deferred) ─────────────────────────
+  // Add the fetch() call shown in the JSDoc above once Apoorv's endpoint
+  // and JSON contract are confirmed.  Until then, no API call is made and
+  // the UI stays unlocked and responsive.
 }
 
 // ══ Event listeners ══════════════════════════════════════════════
