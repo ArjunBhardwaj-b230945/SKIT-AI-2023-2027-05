@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 
@@ -15,6 +14,7 @@ load_dotenv(BASE_DIR / ".env")
 from database import engine
 from routes.auth import router as auth_router
 from routes.protected import router as protected_router
+from routes.tax_record import router as tax_record_router
 
 app = FastAPI(
     title="Final Year Project API",
@@ -73,6 +73,7 @@ def health_check():
         }
 
 
-# Register authentication and user-management endpoints.
+# Register authentication, user-management, and tax data endpoints.
 app.include_router(auth_router)
 app.include_router(protected_router)
+app.include_router(tax_record_router)
