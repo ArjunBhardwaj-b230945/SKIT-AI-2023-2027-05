@@ -871,24 +871,68 @@ def build_error_summary(flags: list) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # LangGraph node + router
 # --------------------------------------------------------------------------- #
-def cbdt_validation_node(state: "TaxSathiState") -> dict:
-    """Validate the ITR-1 draft against CBDT rules. Category A errors block PDF generation."""
+def cbdt_validation_node(state: TaxSathiState) -> TaxSathiState:
+    """
+    Validates the filled ITR-1 draft against CBDT Category A rules.
+
+    Source: CBDT e-Filing ITR-1 Validation Rules AY 2025-26 V1.1 (279 rules).
+    Category A violations block PDF generation.
+
+    Currently implements:
+      Rule 17  — Chapter VI-A deductions ≤ GTI
+      Rule 24  — Total Income = GTI - Deductions (arithmetic check)
+      Rule 117 — Total income ≤ ₹50,00,000 (ITR-1 ceiling)
+
+    Sprint 3 (12 Oct – 15 Nov 2026): implement all 279 rules.
+    See TAXSATHI_PROJECT.md Section 9.2 for the full list.
+    """
     draft = state.get("draft_itr1")
     if draft is None:
         return {"errors": ["cbdt_validation: draft_itr1 is None."]}
 
-    # Idempotent: drop flags from a previous validation pass before re-running,
-    # so loops (user fixes -> re-validate) don't pile up duplicates.
-    kept = [f for f in draft.flags if f.stage != STAGE]
-    all_flags = kept + run_rules(draft)
+    new_flags = []
 
-    # Assumes a pydantic v2 model. For a dataclass use dataclasses.replace(...).
-    new_draft = draft.model_copy(update={"flags": all_flags})
+    b4 = draft.part_b.gross_total_income_B4
+    c1 = draft.part_c.total_deductions_C1
+    c2 = draft.part_c.total_income_C2
 
-    return {
-        "draft_itr1": new_draft,
-        "cbdt_error_summary": build_error_summary(all_flags),
-    }
+    # Rule 17: Chapter VI-A deductions ≤ GTI
+    if c1 is not None and b4 is not None and c1 > b4:
+        new_flags.append(ValidationFlag(
+            stage="itr_validation", field="part_c.total_deductions_C1",
+            issue=f"Rule 17: Deductions (₹{c1:,.0f}) exceed GTI (₹{b4:,.0f}).",
+            severity=FlagSeverity.ERROR,
+        ))
+
+    # Rule 24: Total Income = max(0, GTI - Deductions)
+    if b4 is not None and c1 is not None and c2 is not None:
+        expected = max(0, b4 - c1)
+        if abs(c2 - expected) > 1:
+            new_flags.append(ValidationFlag(
+                stage="itr_validation", field="part_c.total_income_C2",
+                issue=f"Rule 24: Total income (₹{c2:,.0f}) ≠ GTI − Deductions (₹{expected:,.0f}).",
+                severity=FlagSeverity.ERROR,
+            ))
+
+    # Rule 117: ITR-1 income ceiling ₹50L
+    if c2 is not None and c2 > 5_000_000:
+        new_flags.append(ValidationFlag(
+            stage="itr_validation", field="part_c.total_income_C2",
+            issue=f"Rule 117: Income (₹{c2:,.0f}) exceeds ITR-1 ceiling of ₹50,00,000. Use ITR-2.",
+            severity=FlagSeverity.ERROR,
+        ))
+
+    draft.flags.extend(new_flags)
+
+    # Build a human-readable summary of Category A errors for show_errors_node
+    cat_a = [f for f in draft.flags if f.severity == FlagSeverity.ERROR and f.stage == "itr_validation"]
+    summary = None
+    if cat_a:
+        summary = "The following issues must be fixed before generating your ITR-1:\n" + \
+                  "\n".join(f"  • {f.issue}" for f in cat_a)
+
+    return {"draft_itr1": draft, "cbdt_error_summary": summary}
+
 
 
 def route_after_cbdt_validation(state: "TaxSathiState") -> str:
