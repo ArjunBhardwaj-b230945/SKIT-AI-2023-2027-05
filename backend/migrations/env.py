@@ -16,6 +16,7 @@ load_dotenv(BASE_DIR / ".env")
 # Import models so their tables are registered with Base.metadata.
 from models.user import User  # noqa: E402, F401
 from models.tax_record import TaxRecord  # noqa: E402, F401
+from models.chat import ChatMessageModel  # noqa: E402, F401
 
 config = context.config
 

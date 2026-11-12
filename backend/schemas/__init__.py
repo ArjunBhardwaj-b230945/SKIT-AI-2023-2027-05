@@ -19,6 +19,15 @@ from schemas.tax_record import (
     TaxRecordUpdate,
     TaxRegimeEnum,
 )
+from schemas.chat import (
+    ChatCitation,
+    ChatErrorDetail,
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatSessionHistoryResponse,
+    ChatSessionSummary,
+)
 
 __all__ = [
     "Token",
@@ -38,4 +47,11 @@ __all__ = [
     "TaxRecordResponse",
     "TaxRecordListResponse",
     "TaxRecordSummaryResponse",
+    "ChatMessage",
+    "ChatRequest",
+    "ChatResponse",
+    "ChatCitation",
+    "ChatSessionSummary",
+    "ChatSessionHistoryResponse",
+    "ChatErrorDetail",
 ]
