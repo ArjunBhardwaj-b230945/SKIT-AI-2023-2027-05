@@ -6,6 +6,7 @@ from main import app
 from database import Base, SessionLocal, engine
 from models.user import User
 from models.tax_record import TaxRecord
+from models.chat import ChatMessageModel
 
 
 @pytest.fixture
@@ -13,6 +14,7 @@ def client():
     Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as db:
+        db.execute(delete(ChatMessageModel))
         db.execute(delete(TaxRecord))
         db.execute(delete(User))
         db.commit()
@@ -21,6 +23,7 @@ def client():
         yield test_client
 
     with SessionLocal() as db:
+        db.execute(delete(ChatMessageModel))
         db.execute(delete(TaxRecord))
         db.execute(delete(User))
         db.commit()
