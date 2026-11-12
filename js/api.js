@@ -23,6 +23,58 @@ export const ENDPOINTS = {
   SIGNUP: '/signup',
 };
 
+/* ── AI Chat base URL (separate Python backend) ── */
+export const CHAT_API_BASE_URL = 'http://localhost:8000';
+
+export const CHAT_ENDPOINTS = {
+  CHAT: '/chat',
+};
+
+/**
+ * Makes a POST request to the TaxSathi AI chat backend with Bearer auth.
+ *
+ * @param {string} endpoint  - e.g. '/chat'
+ * @param {object} body      - Plain JS object; will be JSON-serialised
+ * @param {string} token     - JWT access token (from auth.js getToken())
+ * @returns {Promise<{ ok: boolean, status: number, data: object }>}
+ *
+ * Throws only on genuine network failures (no internet, CORS hard-block, etc.)
+ */
+export async function chatPost(endpoint, body, token) {
+  const url = `${CHAT_API_BASE_URL}${endpoint}`;
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method:  'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept':       'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (networkError) {
+    throw new NetworkError(
+      'Unable to reach the AI server. Please check that the backend is running at ' +
+      CHAT_API_BASE_URL + ' and that CORS is configured correctly.'
+    );
+  }
+
+  let data = {};
+  try {
+    data = await response.json();
+  } catch (_) {
+    data = { message: response.statusText || 'Unknown server response' };
+  }
+
+  return {
+    ok:     response.ok,
+    status: response.status,
+    data,
+  };
+}
+
 /**
  * Makes a POST request to the TaxSathi backend.
  *
