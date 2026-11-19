@@ -248,13 +248,12 @@ form.addEventListener('submit', async (e) => {
       password: passInput.value,
     });
 
-    if (httpOk && status === 201) {
-      // ✅ Success — persist JWT and navigate to dashboard
-      saveToken(data.token);
-      showAlert('Account created successfully! Redirecting…', 'success');
-      setTimeout(() => { window.location.href = 'dashboard.html'; }, 800);
-      return; // keep button disabled during redirect
-    }
+    if (httpOk && (status === 200 || status === 201)) {
+  // Signup succeeds without a JWT; user must log in.
+  showAlert('Account created successfully! Redirecting to login…', 'success');
+  setTimeout(() => { window.location.href = 'login.html'; }, 800);
+  return; // keep button disabled during redirect
+}
 
     // ── HTTP error responses ─────────────────
     if (status === 400) {
