@@ -148,6 +148,19 @@ let isBusy = false;
 /** Handle for the typing-indicator safety-net timeout. */
 let _typingSafetyHandle = null;
 
+// ══ Active chat session ID ════════════════════════════════════════
+/**
+ * UUID of the current backend chat session.
+ * null on the first message of a page load — the backend will generate a new
+ * UUID and return it in the response, after which every subsequent message in
+ * this page load reuses the same session so all turns are grouped under one
+ * database session.
+ *
+ * Not persisted to localStorage/sessionStorage — resets on page reload.
+ * Only updated after a confirmed successful response (never on error).
+ */
+let currentSessionId = null;
+
 /**
  * Locks or unlocks the composer UI.
  *
@@ -225,8 +238,17 @@ function createMessageElement(role, text) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-message-bubble';
   // textContent — never innerHTML — prevents XSS from message content
-  bubble.textContent = text;
-
+  bubble.textContent = role === 'assistant'
+  ? text.replace(/#{1,6}\s*/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/(?<!\*)\*(?!\*)/g, '')
+  : text;
+  if (role === 'assistant') {
+  bubble.textContent = bubble.textContent
+    .replace(/\s+-\s+(?=[A-Z])/g, '\n\n')
+    .replace(/\s+(\d+)\.\s+/g, '\n$1. ');
+  bubble.style.whiteSpace = 'pre-line';
+}
   wrapper.appendChild(bubble);
 
   // Timestamp shown below user bubbles only
@@ -284,6 +306,62 @@ function appendMessage(role, text) {
  */
 function showSystemMessage(text) {
   appendMessage('system', text);
+}
+
+// ══ Chat API error helpers ════════════════════════════════════════
+/**
+ * Sentinel error class thrown inside the fetch chain when the backend
+ * returns a non-2xx HTTP status.  Carrying the numeric `status` lets
+ * the .catch() handler produce a user-facing message without having to
+ * parse the generic Error.message string.
+ *
+ * Kept file-local — not exported, not shared with other modules.
+ */
+class ChatApiError extends Error {
+  /**
+   * @param {number} status  HTTP status code (e.g. 401, 500).
+   */
+  constructor(status) {
+    super(`HTTP ${status}`);
+    this.name   = 'ChatApiError';
+    this.status = status;
+  }
+}
+
+/**
+ * Maps a caught error to a safe, user-friendly string for display in the
+ * chat conversation via showSystemMessage().
+ *
+ * Decision tree:
+ *   ChatApiError 401          → session / auth expired message
+ *   ChatApiError 500–599      → server unavailable message
+ *   ChatApiError other        → generic request failure message
+ *   TypeError / network error → cannot reach server message
+ *   Other JS error            → generic request failure message
+ *
+ * Never exposes raw backend error text, stack traces, or JWT fragments.
+ *
+ * @param {unknown} err  The value caught by .catch().
+ * @returns {string}     A plain-text message safe to display to the user.
+ */
+function _chatErrorMessage(err) {
+  if (err instanceof ChatApiError) {
+    if (err.status === 401) {
+      return 'Your session has expired or is invalid. Please log in again.';
+    }
+    if (err.status >= 500 && err.status <= 599) {
+      return 'TaxSathi is temporarily unavailable. Please try again later.';
+    }
+    return 'Unable to process your request. Please try again.';
+  }
+  // fetch() throws a TypeError when the browser cannot reach the server
+  // (DNS failure, refused connection, offline).  We check for TypeError
+  // first, but also cover the rare case where a non-TypeError network
+  // failure propagates as a plain Error with no HTTP status code.
+  if (err instanceof TypeError) {
+    return 'Unable to connect to the server. Please check your connection and try again.';
+  }
+  return 'Unable to process your request. Please try again.';
 }
 
 // ══ displayAssistantReply ═════════════════════════════════════════
@@ -484,10 +562,83 @@ function handleSubmit() {
   updateCharCounter();
   updateSendButtonState();
 
-  // ── API INTEGRATION POINT (deferred) ─────────────────────────
-  // Add the fetch() call shown in the JSDoc above once Apoorv's endpoint
-  // and JSON contract are confirmed.  Until then, no API call is made and
-  // the UI stays unlocked and responsive.
+    // Send the message to the existing TaxSathi backend.
+  // Exclude the current user message from prior conversation history.
+  const history = getHistory().slice(0, -1);
+
+  setLoadingState(true);
+  showTypingIndicator();
+
+  fetch('http://127.0.0.1:8000/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${getToken()}`,
+    },
+    body: JSON.stringify({
+      message: text,
+      conversation_history: history,
+      session_id: currentSessionId,  // null on first message; UUID on subsequent turns
+    }),
+  })
+    .then(async (res) => {
+      // ── HTTP error responses ───────────────────────────────────
+      // Throw a ChatApiError (not a plain Error) so .catch() can
+      // distinguish HTTP failures from network failures and show the
+      // correct user-facing message for each case.
+      if (!res.ok) {
+        throw new ChatApiError(res.status);
+      }
+
+      // ── Parse JSON (HTTP 200) ──────────────────────────────────
+      let data;
+      try {
+        data = await res.json();
+      } catch (_) {
+        // Backend returned 200 but the body is not valid JSON.
+        // Treat as an invalid successful response (Case E).
+        throw new Error('InvalidJSON');
+      }
+
+      // ── Validate required reply field ──────────────────────────
+      // Case E: HTTP 200 but reply is missing, non-string, or empty.
+      if (typeof data.reply !== 'string' || !data.reply.trim()) {
+        throw new Error('InvalidReply');
+      }
+
+      // ── Persist session ID (unchanged logic) ───────────────────
+      // Only update if the backend returns a valid non-empty string;
+      // never overwrite an existing valid session ID with a bad value.
+      if (typeof data.session_id === 'string' && data.session_id.trim()) {
+        currentSessionId = data.session_id;
+      }
+
+      // ── Render the assistant reply ─────────────────────────────
+      displayAssistantReply(data.reply);
+    })
+    .catch((err) => {
+      // Determine which user-facing message to show.
+      // Cases A/B/D are handled by _chatErrorMessage() via ChatApiError.
+      // Case C (network failure) is a TypeError from fetch().
+      // Case E (invalid successful response) falls to the default message.
+      let userMessage;
+      if (err.message === 'InvalidJSON' || err.message === 'InvalidReply') {
+        userMessage = 'An unexpected response was received. Please try again.';
+      } else {
+        userMessage = _chatErrorMessage(err);
+      }
+
+      // Log the technical error for debugging without exposing raw
+      // backend messages or sensitive request data to the user.
+      console.error('[TaxSathi] Chat request failed:', err.name, err.message);
+
+      showSystemMessage(userMessage);
+    })
+    .finally(() => {
+      // Always restore UI regardless of success or failure.
+      hideTypingIndicator();
+      setLoadingState(false);
+    });
 }
 
 // ══ Event listeners ══════════════════════════════════════════════

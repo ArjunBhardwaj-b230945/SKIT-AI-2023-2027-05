@@ -15,14 +15,21 @@
    Change this ONE value when the backend moves to
    a production / staging URL.
    ─────────────────────────────────────────────── */
-export const API_BASE_URL = 'http://localhost:3000';
+/* ── Base URL ───────────────────────────────────── */
+export const API_BASE_URL = 'http://127.0.0.1:8000';
 
 /* ── Endpoints (for reference / auto-complete) ── */
 export const ENDPOINTS = {
-  SIGNIN: '/signin',
-  SIGNUP: '/signup',
+  SIGNIN: '/auth/login',
+  SIGNUP: '/auth/signup',
 };
 
+/* ── AI Chat base URL (FastAPI backend) ── */
+export const CHAT_API_BASE_URL = 'http://127.0.0.1:8000';
+
+export const CHAT_ENDPOINTS = {
+  CHAT: '/chat',
+};
 /**
  * Makes a POST request to the TaxSathi backend.
  *

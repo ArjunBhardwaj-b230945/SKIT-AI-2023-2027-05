@@ -18,3 +18,9 @@ parsed_output/
 # Sample tax documents
 form16.pdf
 comprehensive_form_26as_sample.pdf
+
+# Local backend used for demonstration and API testing
+/backend/
+
+# Backup files
+*.bak

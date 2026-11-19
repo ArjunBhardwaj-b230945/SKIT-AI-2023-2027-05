@@ -147,7 +147,7 @@ form.addEventListener('submit', async (e) => {
 
     if (ok && status === 200) {
       // ✅ Success — persist JWT and navigate to dashboard
-      saveToken(data.token);
+      saveToken(data.access_token);
       alertBanner.classList.remove('alert-error');
       alertBanner.classList.add('alert-success');
       showAlert('Sign-in successful! Redirecting…');
