@@ -1,5 +1,8 @@
-# Python-generated files
+
+.env
 __pycache__/
+*.pyc
+venv/
 *.py[oc]
 build/
 dist/
@@ -9,15 +12,12 @@ wheels/
 # Virtual environments
 .venv
 
-# Environment variables
-.env
-
-# Generated/parsed files
-parsed_output/
-
-# Sample tax documents
+# PDF sample files
 form16.pdf
 comprehensive_form_26as_sample.pdf
+
+# Project documentation
+TAXSATHI_PROJECT.md
 
 # Local backend used for demonstration and API testing
 /backend/
