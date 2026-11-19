@@ -28,6 +28,28 @@ from schemas.chat import (
     ChatSessionHistoryResponse,
     ChatSessionSummary,
 )
+from schemas.tax_computation import (
+    ChapterVIADeductionsInput,
+    DocumentReconciliationRequest,
+    DocumentReconciliationResponse,
+    HousePropertyIncomeInput,
+    OtherSourcesIncomeInput,
+    RegimeComputationResult,
+    SalaryIncomeInput,
+    SlabDetail,
+    TaxesPaidInput,
+    TaxComputationRequest,
+    TaxComputationResponse,
+    TaxProfileCreate,
+    TaxProfileResponse,
+)
+from schemas.audit_log import (
+    AuditLogBase,
+    AuditLogListResponse,
+    AuditLogResponse,
+    DatabaseHealthResponse,
+    DatabasePoolDiagnostics,
+)
 
 __all__ = [
     "Token",
@@ -54,4 +76,22 @@ __all__ = [
     "ChatSessionSummary",
     "ChatSessionHistoryResponse",
     "ChatErrorDetail",
+    "SalaryIncomeInput",
+    "HousePropertyIncomeInput",
+    "OtherSourcesIncomeInput",
+    "ChapterVIADeductionsInput",
+    "TaxesPaidInput",
+    "TaxComputationRequest",
+    "SlabDetail",
+    "RegimeComputationResult",
+    "TaxComputationResponse",
+    "DocumentReconciliationRequest",
+    "DocumentReconciliationResponse",
+    "TaxProfileCreate",
+    "TaxProfileResponse",
+    "AuditLogBase",
+    "AuditLogResponse",
+    "AuditLogListResponse",
+    "DatabasePoolDiagnostics",
+    "DatabaseHealthResponse",
 ]

@@ -1,7 +1,12 @@
-
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+try:
+    import email_validator  # noqa: F401
+    from pydantic import EmailStr
+except (ImportError, ModuleNotFoundError):
+    EmailStr = str
 
 from controllers.auth import login_user, signup_user
 from database import get_db
