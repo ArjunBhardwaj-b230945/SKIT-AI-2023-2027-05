@@ -1,3 +1,4 @@
+
 .env
 __pycache__/
 *.pyc
@@ -10,7 +11,16 @@ wheels/
 
 # Virtual environments
 .venv
+
+# PDF sample files
 form16.pdf
 comprehensive_form_26as_sample.pdf
+
+# Project documentation
 TAXSATHI_PROJECT.md
-.env
+
+# Local backend used for demonstration and API testing
+/backend/
+
+# Backup files
+*.bak
