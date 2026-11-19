@@ -16,6 +16,7 @@ from routes.auth import router as auth_router
 from routes.protected import router as protected_router
 from routes.tax_record import router as tax_record_router
 from routes.chat import router as chat_router
+from routes.audit import router as audit_router
 
 app = FastAPI(
     title="Final Year Project API",
@@ -74,8 +75,9 @@ def health_check():
         }
 
 
-# Register authentication, user-management, tax data, and AI chat endpoints.
+# Register authentication, user-management, tax data, chat, and database audit endpoints.
 app.include_router(auth_router)
 app.include_router(protected_router)
 app.include_router(tax_record_router)
 app.include_router(chat_router)
+app.include_router(audit_router)

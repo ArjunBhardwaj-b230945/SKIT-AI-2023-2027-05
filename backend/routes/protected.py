@@ -1,7 +1,12 @@
-
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
+try:
+    import email_validator  # noqa: F401
+    from pydantic import EmailStr
+except (ImportError, ModuleNotFoundError):
+    EmailStr = str
 
 from controllers.auth import (
     change_password,

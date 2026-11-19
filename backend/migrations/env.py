@@ -17,6 +17,8 @@ load_dotenv(BASE_DIR / ".env")
 from models.user import User  # noqa: E402, F401
 from models.tax_record import TaxRecord  # noqa: E402, F401
 from models.chat import ChatMessageModel  # noqa: E402, F401
+from models.tax_profile import TaxProfileModel  # noqa: E402, F401
+from models.audit_log import AuditLogModel  # noqa: E402, F401
 
 config = context.config
 

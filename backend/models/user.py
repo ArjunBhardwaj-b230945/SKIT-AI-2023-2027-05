@@ -9,6 +9,8 @@ from database import Base
 if TYPE_CHECKING:
     from models.tax_record import TaxRecord
     from models.chat import ChatMessageModel
+    from models.tax_profile import TaxProfileModel
+    from models.audit_log import AuditLogModel
 
 
 class User(Base):
@@ -54,4 +56,15 @@ class User(Base):
         "ChatMessageModel",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+
+    tax_profiles: Mapped[list["TaxProfileModel"]] = relationship(
+        "TaxProfileModel",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    audit_logs: Mapped[list["AuditLogModel"]] = relationship(
+        "AuditLogModel",
+        back_populates="user",
     )
