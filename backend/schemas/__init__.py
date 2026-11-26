@@ -50,6 +50,13 @@ from schemas.audit_log import (
     DatabaseHealthResponse,
     DatabasePoolDiagnostics,
 )
+from schemas.itr_filing import (
+    ApplicationDashboardResponse,
+    ApplicationDataExportResponse,
+    ITRFilingCreate,
+    ITRFilingListResponse,
+    ITRFilingResponse,
+)
 
 __all__ = [
     "Token",
@@ -94,4 +101,9 @@ __all__ = [
     "AuditLogListResponse",
     "DatabasePoolDiagnostics",
     "DatabaseHealthResponse",
+    "ITRFilingCreate",
+    "ITRFilingResponse",
+    "ITRFilingListResponse",
+    "ApplicationDashboardResponse",
+    "ApplicationDataExportResponse",
 ]
