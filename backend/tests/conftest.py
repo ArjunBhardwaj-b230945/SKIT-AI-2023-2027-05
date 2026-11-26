@@ -9,6 +9,7 @@ from models.tax_record import TaxRecord
 from models.chat import ChatMessageModel
 from models.tax_profile import TaxProfileModel
 from models.audit_log import AuditLogModel
+from models.itr_filing import ITRFilingModel
 
 
 @pytest.fixture
@@ -18,6 +19,7 @@ def client():
     with SessionLocal() as db:
         db.execute(delete(AuditLogModel))
         db.execute(delete(ChatMessageModel))
+        db.execute(delete(ITRFilingModel))
         db.execute(delete(TaxProfileModel))
         db.execute(delete(TaxRecord))
         db.execute(delete(User))
@@ -29,6 +31,7 @@ def client():
     with SessionLocal() as db:
         db.execute(delete(AuditLogModel))
         db.execute(delete(ChatMessageModel))
+        db.execute(delete(ITRFilingModel))
         db.execute(delete(TaxProfileModel))
         db.execute(delete(TaxRecord))
         db.execute(delete(User))

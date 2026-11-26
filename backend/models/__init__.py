@@ -3,6 +3,7 @@ from models.tax_record import TaxRecord
 from models.chat import ChatMessageModel
 from models.tax_profile import TaxProfileModel
 from models.audit_log import AuditLogModel
+from models.itr_filing import ITRFilingModel
 
 __all__ = [
     "User",
@@ -10,4 +11,5 @@ __all__ = [
     "ChatMessageModel",
     "TaxProfileModel",
     "AuditLogModel",
+    "ITRFilingModel",
 ]
